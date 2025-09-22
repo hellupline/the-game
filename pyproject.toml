@@ -1,0 +1,75 @@
+[project]
+name = "the-game"
+version = "0.1.0"
+description = "the game"
+readme = "README.md"
+authors = [
+    { name = "Renan Traba", email = "hellupline@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pygame-ce>=2.5.5",
+]
+
+[project.scripts]
+the-game = "the_game:main"
+
+[build-system]
+requires = ["uv_build>=0.8.14,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "ipython>=9.5.0",
+]
+
+[tool.uv.build-backend]
+module-name = "the_game"
+
+[tool.uv.pip]
+generate-hashes = true
+
+[tool.ruff]
+include = ["pyproject.toml", "src/**/*.py"]
+extend-include = ["*.ipynb"]
+line-length = 110
+indent-width = 4
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D100", # https://docs.astral.sh/ruff/rules/undocumented-public-module/
+    "D101", # https://docs.astral.sh/ruff/rules/undocumented-public-class/
+    "D102", # https://docs.astral.sh/ruff/rules/undocumented-public-method/
+    "D103", # https://docs.astral.sh/ruff/rules/undocumented-public-method/
+    "D104", # https://docs.astral.sh/ruff/rules/undocumented-public-package/
+    "D105", # https://docs.astral.sh/ruff/rules/undocumented-magic-method/
+    "D106", # https://docs.astral.sh/ruff/rules/undocumented-public-nested-class/
+    "D107", # https://docs.astral.sh/ruff/rules/undocumented-public-init/
+    "D200", # https://docs.astral.sh/ruff/rules/unnecessary-multiline-docstring/
+    "D203", # https://docs.astral.sh/ruff/rules/incorrect-blank-line-before-class/
+    "D212", # https://docs.astral.sh/ruff/rules/multi-line-summary-first-line/
+    "D400", # https://docs.astral.sh/ruff/rules/missing-trailing-period/
+    "D415", # https://docs.astral.sh/ruff/rules/missing-terminal-punctuation/
+    "TD002", # https://docs.astral.sh/ruff/rules/missing-todo-author/
+    "TD003", # https://docs.astral.sh/ruff/rules/missing-todo-link/
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = []
+"**/{tests,docs,tools}/*" = []
+
+[tool.ruff.lint.pylint]
+max-args = 10
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "double"
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.format]
+exclude = ["*.pyi", "*.ipynb"]
+quote-style = "double"
+docstring-code-format = true
