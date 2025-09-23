@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+from contextlib import suppress
+from enum import Enum
 from typing import Protocol
 from typing import Self
 from typing import final
@@ -18,7 +20,7 @@ import pygame.time
 
 WINDOW_SIZE = (960, 800)
 VIEWPORT_SIZE = (800, 800)
-_TILE_SIZE = 32
+_TILE_SIZE = 64
 TILE_SIZE = (_TILE_SIZE, _TILE_SIZE)
 FPS = 60
 BLACK = pygame.color.Color(64, 64, 64)
@@ -95,6 +97,7 @@ class LevelWorld:
     def load_tiles(self: Self, entity_groups: list[YSortCameraGroup | HitboxGroup]) -> None:
         map_data = [list(line) for line in MAP_DATA.strip().splitlines()]
         tile_width, tile_height = TILE_SIZE
+        items: dict[tuple[int, int], Tile] = {}
         for row_index, row in enumerate(map_data):
             for col_index, tile_code in enumerate(row):
                 pos = (col_index * tile_width, row_index * tile_height)
@@ -106,11 +109,12 @@ class LevelWorld:
                     tile = Tile(pos=pos, color=MAGENTA)
                 else:
                     continue
-                self.items[(col_index, row_index)] = tile
+                items[(col_index, row_index)] = tile
                 for group in entity_groups:
                     group.add(tile)
         map_width = max(len(row) for row in map_data) * tile_width
         map_height = len(map_data) * tile_height
+        self.items.update(items)
         self.rect = pygame.rect.FRect((0, 0), (map_width, map_height))
 
 
@@ -135,12 +139,20 @@ class YSortCameraGroup(EntityGroup[IsDrawable]):
     surface: pygame.surface.Surface
     rect: pygame.rect.FRect | pygame.rect.Rect
     offset: pygame.math.Vector2
+    ground_surface: pygame.surface.Surface
+    ground_rect: pygame.rect.FRect | pygame.rect.Rect
 
-    def __init__(self: Self, items: list[IsDrawable] | None = None) -> None:
+    def __init__(
+        self: Self,
+        items: list[IsDrawable] | None = None,
+        viewport_size: tuple[int, int] = VIEWPORT_SIZE,
+    ) -> None:
         super().__init__(items)
-        self.surface = pygame.surface.Surface(VIEWPORT_SIZE)
-        self.rect = pygame.rect.FRect((0, 0), VIEWPORT_SIZE)
+        self.surface = pygame.surface.Surface(viewport_size)
+        self.rect = pygame.rect.FRect((0, 0), viewport_size)
         self.offset = pygame.math.Vector2()
+        self.ground_surface = ground_surface = pygame.image.load("data/graphics/tilemap/ground.png")
+        self.ground_rect = ground_surface.get_rect(topleft=(0, 0))
 
     def box_target(self: Self, entity: Entity, level_world: LevelWorld) -> None:
         self.rect.center = entity.rect.center
@@ -150,6 +162,8 @@ class YSortCameraGroup(EntityGroup[IsDrawable]):
 
     def render(self: Self) -> None:
         _ = self.surface.fill(WHITE)
+        ground_offset = self.ground_rect.topleft - self.offset
+        _ = self.surface.blit(self.ground_surface, ground_offset)
         for item in sorted(self.items, key=lambda i: i.rect.centery):
             offset = item.rect.topleft - self.offset
             _ = self.surface.blit(item.surface, offset)
@@ -173,12 +187,26 @@ class Tile:
         self.hitbox = rect.inflate(0, -5)
 
 
+class MovementStatus(Enum):
+    UP_MOVING = "up_moving"
+    UP_IDLE = "up_idle"
+    DOWN_MOVING = "down_moving"
+    DOWN_IDLE = "down_idle"
+    LEFT_MOVING = "left_moving"
+    LEFT_IDLE = "left_idle"
+    RIGHT_MOVING = "right_moving"
+    RIGHT_IDLE = "right_idle"
+
+
 class Entity:
     surface: pygame.surface.Surface
     rect: pygame.rect.FRect | pygame.rect.Rect
     hitbox: pygame.rect.FRect | pygame.rect.Rect
     direction: pygame.math.Vector2
+    movement_status: MovementStatus = MovementStatus.DOWN_IDLE
     speed: int = 5
+    animations: dict[MovementStatus, list[pygame.surface.Surface]]
+    _animation_frame: float = 0
 
     def __init__(
         self: Self,
@@ -187,18 +215,49 @@ class Entity:
         hitbox: pygame.rect.FRect | pygame.rect.Rect | None = None,
         direction: pygame.math.Vector2 | None = None,
         speed: int = 5,
+        animations: dict[MovementStatus, list[pygame.surface.Surface]] | None = None,
+        _animation_frame: float = 0,
     ) -> None:
         if hitbox is None:
             hitbox = rect.copy()
         if direction is None:
             direction = pygame.math.Vector2()
+        if animations is None:
+            animations = {}
         self.surface = surface
         self.rect = rect
         self.hitbox = hitbox
         self.direction = direction
         self.speed = speed
+        self.animations = animations
+        self._animation_frame = _animation_frame
 
-    def move(self: Self, hitbox_groups: list[HitboxGroup]) -> None:
+    def update_movement_status(self: Self) -> None:
+        if self.direction.x > 0:
+            self.movement_status = MovementStatus.RIGHT_MOVING
+        elif self.direction.x < 0:
+            self.movement_status = MovementStatus.LEFT_MOVING
+        elif self.direction.y > 0:
+            self.movement_status = MovementStatus.DOWN_MOVING
+        elif self.direction.y < 0:
+            self.movement_status = MovementStatus.UP_MOVING
+        elif self.movement_status == MovementStatus.RIGHT_MOVING:
+            self.movement_status = MovementStatus.RIGHT_IDLE
+        elif self.movement_status == MovementStatus.LEFT_MOVING:
+            self.movement_status = MovementStatus.LEFT_IDLE
+        elif self.movement_status == MovementStatus.DOWN_MOVING:
+            self.movement_status = MovementStatus.DOWN_IDLE
+        elif self.movement_status == MovementStatus.UP_MOVING:
+            self.movement_status = MovementStatus.UP_IDLE
+
+    def set_animation_frame(self: Self) -> None:
+        with suppress(KeyError):
+            # NOTE: better adjust animation speed, based on entity speed
+            frames = self.animations[self.movement_status]
+            self._animation_frame = animation_frame = (self._animation_frame + 0.2) % len(frames)
+            self.surface = frames[int(animation_frame)]
+
+    def update_position(self: Self, hitbox_groups: list[HitboxGroup]) -> None:
         if (direction := self.direction).magnitude() != 0:
             direction = direction.normalize()
         self.hitbox.x += direction.x * self.speed
@@ -229,35 +288,72 @@ class Entity:
 @final
 class Player(Entity):
     def __init__(self: Self, pos: tuple[int, int]) -> None:
-        surface = draw_rect(size=(1, 1), color=BLUE)
+        animations = {
+            MovementStatus.UP_MOVING: [
+                pygame.image.load(f"data/graphics/player/up/up_{i}.png").convert_alpha() for i in range(4)
+            ],
+            MovementStatus.UP_IDLE: [
+                pygame.image.load("data/graphics/player/up_idle/idle_up.png").convert_alpha(),
+            ],
+            MovementStatus.DOWN_MOVING: [
+                pygame.image.load(f"data/graphics/player/down/down_{i}.png").convert_alpha() for i in range(4)
+            ],
+            MovementStatus.DOWN_IDLE: [
+                pygame.image.load("data/graphics/player/down_idle/idle_down.png").convert_alpha(),
+            ],
+            MovementStatus.LEFT_MOVING: [
+                pygame.image.load(f"data/graphics/player/left/left_{i}.png").convert_alpha() for i in range(4)
+            ],
+            MovementStatus.LEFT_IDLE: [
+                pygame.image.load("data/graphics/player/left_idle/idle_left.png").convert_alpha(),
+            ],
+            MovementStatus.RIGHT_MOVING: [
+                pygame.image.load(f"data/graphics/player/right/right_{i}.png").convert_alpha()
+                for i in range(4)
+            ],
+            MovementStatus.RIGHT_IDLE: [
+                pygame.image.load("data/graphics/player/right_idle/idle_right.png").convert_alpha(),
+            ],
+        }
+        surface = animations[MovementStatus.DOWN_IDLE][0]
         rect = surface.get_frect(topleft=pos)
         hitbox = rect.inflate(0, -5)
-        super().__init__(surface, rect, hitbox)
+        super().__init__(surface=surface, rect=rect, hitbox=hitbox, animations=animations)
 
     def handle_event(self: Self, event: pygame.event.Event) -> None:  # noqa: C901
         dx, dy = self.direction
+        speed = self.speed
         if event.type == pygame.constants.KEYDOWN:
-            if event.key == pygame.constants.K_UP:  # pyright: ignore[reportAny]
+            key = event.key  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_UP:
                 dy -= 1
-            if event.key == pygame.constants.K_DOWN:  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_DOWN:
                 dy += 1
-            if event.key == pygame.constants.K_LEFT:  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_LEFT:
                 dx -= 1
-            if event.key == pygame.constants.K_RIGHT:  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_RIGHT:
                 dx += 1
+            if key == pygame.constants.K_LSHIFT:
+                speed = 15
         if event.type == pygame.constants.KEYUP:
-            if event.key == pygame.constants.K_UP:  # pyright: ignore[reportAny]
+            key = event.key  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_UP:
                 dy += 1
-            if event.key == pygame.constants.K_DOWN:  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_DOWN:
                 dy -= 1
-            if event.key == pygame.constants.K_LEFT:  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_LEFT:
                 dx += 1
-            if event.key == pygame.constants.K_RIGHT:  # pyright: ignore[reportAny]
+            if key == pygame.constants.K_RIGHT:
                 dx -= 1
-        self.direction: pygame.math.Vector2 = pygame.math.Vector2(dx, dy)
+            if key == pygame.constants.K_LSHIFT:
+                speed = 5
+        self.direction = pygame.math.Vector2(dx, dy)
+        self.speed = speed
 
     def update(self: Self, hitbox_groups: list[HitboxGroup]) -> None:
-        self.move(hitbox_groups=hitbox_groups)
+        self.update_movement_status()
+        self.set_animation_frame()
+        self.update_position(hitbox_groups=hitbox_groups)
 
 
 def draw_rect(
