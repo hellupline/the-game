@@ -43,8 +43,8 @@ CYAN = pygame.color.Color(64, 240, 240)
 MAGENTA = pygame.color.Color(240, 64, 240)
 YELLOW = pygame.color.Color(240, 240, 64)
 
-_WINDOW_WIDTH = 4 * 4  # how many tiles horizontally
-_WINDOW_HEIGHT = 4 * 3  # how many tiles vertically
+_WINDOW_WIDTH = 15  # how many tiles horizontally
+_WINDOW_HEIGHT = 10  # how many tiles vertically
 _TILE_SIZE = 16
 _SCALE_FACTOR = 3
 WINDOW_SIZE = (_WINDOW_WIDTH * _TILE_SIZE * _SCALE_FACTOR, _WINDOW_HEIGHT * _TILE_SIZE * _SCALE_FACTOR)
@@ -56,8 +56,8 @@ MAPS_DIR = Path("data/maps")
 PLAYER_COLORKEY = pygame.color.Color(255, 127, 39)
 PLAYER_SPRITE_FILENAME = Path("data/sprites/player.png")
 
-MOVEMENT_SPEED_WALKING = 1
-MOVEMENT_SPEED_RUNNING = 2
+MOVEMENT_SPEED_WALKING = 60
+MOVEMENT_SPEED_RUNNING = 180
 ANIMATION_SPEED = 0.05
 
 
@@ -92,19 +92,17 @@ class SpriteLayer(IntEnum):
 
 
 class Game:
-    screen: pygame.surface.Surface
-    font: pygame.font.Font
+    surface: pygame.surface.Surface
     clock: pygame.time.Clock
     camera: Camera
+    player: Player
     collision_group: CollisionGroup
     entities: list[Entity]
-    player: Player
     _assets: Assets
 
     def __init__(self: Self) -> None:
         pygame.display.set_caption("The Game")
-        self.screen = pygame.display.set_mode(WINDOW_SIZE)
-        self.font = pygame.font.Font()
+        self.surface = pygame.display.set_mode(WINDOW_SIZE)
         self.clock = pygame.time.Clock()
         self.camera = Camera()
         self.collision_group = CollisionGroup()
@@ -153,7 +151,6 @@ class Game:
             self.player.get_input()
             for entity in self.entities:
                 entity.update(dt)
-            self.camera.box_target(self.player)
             self.draw()
             dt = self.clock.tick(FPS) / 1000
 
@@ -170,14 +167,14 @@ class Game:
                 sys.exit(0)
 
     def draw(self: Self) -> None:
+        self.camera.box_target(self.player)
         self.camera.draw()
-        _ = self.screen.fill(BLACK)
+        _ = self.surface.fill(BLACK)
         _ = pygame.transform.scale_by(
             self.camera.surface,
             factor=_SCALE_FACTOR,
-            dest_surface=self.screen,
+            dest_surface=self.surface,
         )
-        debug(f"{self.player.movement_direction.value}")
         pygame.display.update()
 
 
@@ -211,23 +208,21 @@ class Camera:
         self._area_rect = None
 
     @cached_property
-    def area_rect(self: Self) -> pygame.rect.FRect:
+    def min_area_rect(self: Self) -> pygame.rect.FRect:
         if self._area_rect is None:
             self._area_rect = get_min_area([tile.rect for tile in self.items])
         return self._area_rect
 
     def box_target(self: Self, entity: Entity) -> None:
         self.rect.center = entity.rect.center
-        self.rect.clamp_ip(self.area_rect)
+        self.rect.clamp_ip(self.min_area_rect)
         self.offset.update(self.rect.topleft)
 
     def draw(self: Self) -> None:
-        _ = self.surface.fill(WHITE)
+        _ = self.surface.fill(BLACK)
         items = self.items
         items = sorted(items, key=lambda item: (item.layer, item.y_sort))
-        for item in items:
-            offset = item.rect.topleft - self.offset
-            _ = self.surface.blit(item.surface, offset)
+        _ = self.surface.blits((item.surface, item.rect.move(-self.offset)) for item in items)
         draw_grid(self.surface, offset=-self.offset)
 
 
@@ -300,11 +295,7 @@ class Entity(Tile):
         animations: dict[tuple[MovementDirection, MovementStatus], list[pygame.surface.Surface]]
         | None = None,
     ) -> None:
-        super().__init__(
-            position=position,
-            surface=surface,
-            layer=layer,
-        )
+        super().__init__(position=position, surface=surface, layer=layer)
         if movement_vector is None:
             movement_vector = pygame.math.Vector2(0, 0)
         if animations is None:
@@ -314,49 +305,34 @@ class Entity(Tile):
         self.movement_status = movement_status
         self.collision_group = collision_group
         self.animations = animations
-        # NOTE: better handle hitbox shape/size/anchor
+        # XXX: better handle hitbox shape/size/anchor
         self.hitbox = pygame.rect.FRect(position, (_TILE_SIZE, _TILE_SIZE))
         self.rect.bottomleft = self.hitbox.bottomleft
 
     def move_down(self: Self, run: bool = False) -> None:  # noqa: FBT001, FBT002
-        # XXX: fix player rotation before movement
-        if self.movement_direction != MovementDirection.DOWN:
-            self.movement_direction = MovementDirection.DOWN
-            return
-        self.movement_vector = self.hitbox.topleft + pygame.math.Vector2(0, _TILE_SIZE)
-        if run:
-            self.movement_status = MovementStatus.RUNNING
-        else:
-            self.movement_status = MovementStatus.WALKING
-        self._moving = True
+        self._move(MovementDirection.DOWN, pygame.math.Vector2(0, _TILE_SIZE), run)
 
     def move_up(self: Self, run: bool = False) -> None:  # noqa: FBT001, FBT002
-        if self.movement_direction != MovementDirection.UP:
-            self.movement_direction = MovementDirection.UP
-            return
-        self.movement_vector = self.hitbox.topleft + pygame.math.Vector2(0, -_TILE_SIZE)
-        if run:
-            self.movement_status = MovementStatus.RUNNING
-        else:
-            self.movement_status = MovementStatus.WALKING
-        self._moving = True
+        self._move(MovementDirection.UP, pygame.math.Vector2(0, -_TILE_SIZE), run)
 
     def move_right(self: Self, run: bool = False) -> None:  # noqa: FBT001, FBT002
-        if self.movement_direction != MovementDirection.RIGHT:
-            self.movement_direction = MovementDirection.RIGHT
-            return
-        self.movement_vector = self.hitbox.topleft + pygame.math.Vector2(_TILE_SIZE, 0)
-        if run:
-            self.movement_status = MovementStatus.RUNNING
-        else:
-            self.movement_status = MovementStatus.WALKING
-        self._moving = True
+        self._move(MovementDirection.RIGHT, pygame.math.Vector2(_TILE_SIZE, 0), run)
 
     def move_left(self: Self, run: bool = False) -> None:  # noqa: FBT001, FBT002
-        if self.movement_direction != MovementDirection.LEFT:
-            self.movement_direction = MovementDirection.LEFT
+        self._move(MovementDirection.LEFT, pygame.math.Vector2(-_TILE_SIZE, 0), run)
+
+    def _move(
+        self: Self,
+        direction: MovementDirection,
+        vector: pygame.math.Vector2,
+        run: bool = False,  # noqa: FBT001, FBT002
+    ) -> None:
+        # XXX: implement throttle here
+        # if running, bypass throttle
+        if self.movement_direction != direction:
+            self.movement_direction = direction
             return
-        self.movement_vector = self.hitbox.topleft + pygame.math.Vector2(-_TILE_SIZE, 0)
+        self.movement_vector = self.hitbox.topleft + vector
         if run:
             self.movement_status = MovementStatus.RUNNING
         else:
@@ -364,9 +340,9 @@ class Entity(Tile):
         self._moving = True
 
     def move_stop(self: Self) -> None:
+        self._moving = False
         self.movement_vector = pygame.math.Vector2()
         self.movement_status = MovementStatus.IDLE
-        self._moving = False
 
     @override
     def update(self: Self, dt: float) -> None:
@@ -379,10 +355,10 @@ class Entity(Tile):
             self._animation_index = (self._animation_index + self.animation_speed) % len(frames)
             self.surface = frames[int(self._animation_index)]
 
-    def update_position(self: Self, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+    def update_position(self: Self, dt: float) -> None:
         if self.movement_vector.magnitude() == 0:
             return
-        movement_speed = self.movement_status.get_movement_speed()
+        movement_speed = round(self.movement_status.get_movement_speed() * dt)
         pos = pygame.math.Vector2(self.hitbox.topleft)
         pos.move_towards_ip(self.movement_vector, movement_speed)
         if pos == self.movement_vector:
@@ -630,7 +606,7 @@ class TiledTileset:
         tiles: list[pygame.surface.Surface] = []
         for y in range(0, self.image_height, self.tileheight):
             for x in range(0, self.image_width, self.tilewidth):
-                rect = pygame.Rect((x, y), (self.tilewidth, self.tileheight))
+                rect = pygame.FRect((x, y), (self.tilewidth, self.tileheight))
                 tile = surface.subsurface(rect)
                 tiles.append(tile)
         return {str(i): tile for i, tile in enumerate(tiles, start=self.firstgid)}
@@ -741,13 +717,13 @@ def draw_grid(
     offset: pygame.math.Vector2 | None = None,
     tile_size: int = _TILE_SIZE,
 ) -> None:
-    rect = surface.get_rect()
+    rect = surface.get_frect()
     if offset is None:
         offset = pygame.math.Vector2(0, 0)
     width, height = rect.size
-    for x in range(int(offset.x % tile_size), width, tile_size):
+    for x in range(int(offset.x % tile_size), int(width), tile_size):
         _ = pygame.draw.line(surface, color=BLACK, start_pos=(x, 0), end_pos=(x, height), width=1)
-    for y in range(int(offset.y % tile_size), height, tile_size):
+    for y in range(int(offset.y % tile_size), int(height), tile_size):
         _ = pygame.draw.line(surface, color=BLACK, start_pos=(0, y), end_pos=(width, y), width=1)
 
 
