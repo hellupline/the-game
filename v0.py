@@ -1,7 +1,6 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
-# - multiple npcs
 # - add map scrolling
 # - add more maps
 # - npcs can walk in a area (not just a path)
@@ -20,6 +19,8 @@ from typing import Literal
 from typing import Self
 from typing import final
 from typing import override
+from uuid import UUID
+from uuid import uuid4
 
 import pygame
 import pygame.base
@@ -96,7 +97,7 @@ class Window:
 class Game(Window):
     game_state: GameState
     map_data: MapData
-    npc: Lancer
+    npc: list[Lancer]
     player: Player
     menu: Menu
     dialog: Dialog
@@ -108,7 +109,10 @@ class Game(Window):
         super().__init__(surface, font)
         self.game_state = GameState.overworld
         self.map_data = MapData(map_data=MAP_DATA)
-        self.npc = Lancer(game=self, position=self.map_data.npc_position)
+        self.npc = [
+            Lancer(game=self, position=position, path=NPC_PATH[i])
+            for i, position in enumerate(self.map_data.npc_positions)
+        ]
         self.player = Player(game=self, position=self.map_data.player_position)
         self.menu = Menu(surface=self.surface, font=self.font)
         self.dialog = Dialog(surface=self.surface, font=self.font)
@@ -128,7 +132,8 @@ class Game(Window):
     @override
     def update(self: Self, dt: float) -> bool:
         if self.game_state == GameState.npc_chasing:
-            _ = self.npc.update(dt)
+            for npc in self.npc:
+                _ = npc.update(dt)
             return False
         if self.game_state == GameState.dialog:
             self.dialog.run()
@@ -141,7 +146,8 @@ class Game(Window):
         if self.game_state == GameState.battle:
             return False
         if self.game_state == GameState.overworld:
-            _ = self.npc.update(dt)
+            for npc in self.npc:
+                _ = npc.update(dt)
             _ = self.player.update(dt)
         return True
 
@@ -169,36 +175,41 @@ class Game(Window):
 
     def draw_npc_path(self: Self) -> None:
         inflate = -_TILE_SIZE * 0.75
-        if self.npc.patrol_path is None:
-            return
-        for position in self.npc.patrol_path.items:
-            x, y = position
-            pos = (x * _TILE_SIZE, y * _TILE_SIZE)
-            rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
-            if position == self.npc.patrol_path.next():
-                _ = pygame.draw.rect(self.surface, YELLOW, rect)
-            else:
-                _ = pygame.draw.rect(self.surface, CYAN, rect)
+        for npc in self.npc:
+            if npc.patrol_path is None:
+                continue
+            for position in npc.patrol_path.items:
+                x, y = position
+                pos = (x * _TILE_SIZE, y * _TILE_SIZE)
+                rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
+                if position == npc.patrol_path.next():
+                    _ = pygame.draw.rect(self.surface, YELLOW, rect)
+                else:
+                    _ = pygame.draw.rect(self.surface, CYAN, rect)
 
     def draw_npc_line_of_sight(self: Self) -> None:
         inflate = -_TILE_SIZE * 0.75
-        for position in self.npc.get_line_of_sight():
-            x, y = position
-            pos = (x * _TILE_SIZE, y * _TILE_SIZE)
-            rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
-            _ = pygame.draw.rect(self.surface, MAGENTA, rect, width=1)
+        for npc in self.npc:
+            for position in npc.get_line_of_sight():
+                x, y = position
+                pos = (x * _TILE_SIZE, y * _TILE_SIZE)
+                rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
+                _ = pygame.draw.rect(self.surface, MAGENTA, rect, width=1)
 
     def draw_characters(self: Self) -> None:
+        for npc in self.npc:
+            _ = self.surface.blit(npc.surface, npc.rect)
         _ = self.surface.blit(self.player.surface, self.player.rect)
-        _ = self.surface.blit(self.npc.surface, self.npc.rect)
 
     def is_walkable(
         self: Self,
         position: pygame.typing.Point,
         collision_type: Literal["player", "npc"],
     ) -> bool:
-        if collision_type == "player" and position in (self.npc.position, self.npc.next_position):
-            return False
+        if collision_type == "player":
+            has_collision = (position == p for npc in self.npc for p in (npc.position, npc.next_position))
+            if any(has_collision):
+                return False
         if collision_type == "npc" and position in (self.player.position, self.player.next_position):
             return False
         return self.map_data.is_walkable(position)
@@ -251,18 +262,19 @@ class Dialog(Window):
 
 class MapData:
     data: dict[pygame.typing.Point, TileType]
+    npc_positions: list[pygame.typing.Point]
     player_position: pygame.typing.Point
-    npc_position: pygame.typing.Point
 
     def __init__(self: Self, map_data: str) -> None:
         self.data = {}
+        self.npc_positions = []
         for y, row in enumerate(map_data.strip().splitlines()):
             for x, tile in enumerate(row):
-                if tile in (".", "1"):
+                if tile in (".", "H"):
                     self.data[(x, y)] = TileType(tile)
-                elif tile == "2":
-                    self.npc_position = (x, y)
-                elif tile == "9":
+                elif tile in ("1", "2"):
+                    self.npc_positions.append((x, y))
+                elif tile == "p":
                     self.player_position = (x, y)
 
     def is_walkable(self: Self, position: pygame.typing.Point) -> bool:
@@ -270,6 +282,7 @@ class MapData:
 
 
 class Character:
+    id: UUID
     game: Game
     position: pygame.typing.Point
     surface: pygame.surface.Surface
@@ -288,6 +301,7 @@ class Character:
         position: pygame.typing.Point,
         sprites: dict[Direction, pygame.surface.Surface],
     ) -> None:
+        self.id = uuid4()
         self.game = game
         self._sprites = sprites
         self.position = position
@@ -407,6 +421,7 @@ class Lancer(Character):
         self: Self,
         game: Game,
         position: pygame.typing.Point,
+        path: str,
         line_of_sight_distance: int = 5,
     ) -> None:
         self._normal_sprites = {
@@ -428,14 +443,14 @@ class Lancer(Character):
             Direction.LEFT: _draw_direction_arrow(Direction.LEFT, GREY),
         }
         self.lancer_state = LancerState.patrolling
-        self.patrol_path = MovementGenerator(self.load_path())
+        self.patrol_path = MovementGenerator(self.load_path(path))
         self.line_of_sight_distance = line_of_sight_distance
         super().__init__(game, position, self._normal_sprites)
 
-    def load_path(self: Self) -> list[pygame.typing.Point]:
+    def load_path(self: Self, path: str) -> list[pygame.typing.Point]:
         items = [
             ((x, y), sequence)
-            for y, row in enumerate(NPC_PATH.strip().splitlines())
+            for y, row in enumerate(path.strip().splitlines())
             for x, sequence in enumerate(row)
             if sequence not in (".",)
         ]
@@ -545,9 +560,10 @@ class MovementType(Enum):
 
 class TileType(Enum):
     EMPTY = "."
-    WALL = "1"
-    NPC = "2"
-    PLAYER = "9"
+    WALL = "H"
+    NPC1 = "1"
+    NPC2 = "2"
+    PLAYER = "p"
 
 
 class GameState(Enum):
@@ -586,29 +602,52 @@ def main() -> None:
 
 
 MAP_DATA = """
-111111111111111111111111111111
-1............................1
-1.11111.....11111............1
-1.1.............1............1
-1.1.............1............1
-1.1.............1............1
-1.1...1111111...1............1
-1.....1111111................1
-1.....1111111................1
-1.....1111111................1
-1.....1111111.............9..1
-1.....1111111................1
-1.1...1111111...1............1
-1.1.............1............1
-1.1.............1............1
-1.1.............1............1
-1.11111.....11111......2.....1
-1............................1
-1............................1
-111111111111111111111111111111
+HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
+H............................H
+H.HHHHH.....HHHHH......1.....H
+H.H.............H............H
+H.H.............H............H
+H.H.............H............H
+H.H...HHHHHHH...H............H
+H.....HHHHHHH................H
+H.....HHHHHHH................H
+H.....HHHHHHH.............p..H
+H.....HHHHHHH................H
+H.....HHHHHHH................H
+H.H...HHHHHHH...H............H
+H.H.............H............H
+H.H.............H............H
+H.H.............H............H
+H.HHHHH.....HHHHH......2.....H
+H............................H
+H............................H
+HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 """
 
-NPC_PATH = """
+NPC_PATH1 = """
+..............................
+..............................
+.....................cbavut...
+.....................d....s...
+.....................e....r...
+.....................f..opq...
+.....................g..n.....
+.....................h..m.....
+.....................ijkl.....
+..............................
+..............................
+..............................
+..............................
+..............................
+..............................
+..............................
+..............................
+..............................
+..............................
+..............................
+"""
+
+NPC_PATH2 = """
 ..............................
 ..............................
 ..............................
@@ -630,6 +669,8 @@ NPC_PATH = """
 ..............................
 ..............................
 """
+
+NPC_PATH = [NPC_PATH1, NPC_PATH2]
 
 
 if __name__ == "__main__":
