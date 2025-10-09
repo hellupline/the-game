@@ -58,11 +58,12 @@ PLAYER_SPRITE_FILENAME = Path("data/sprites/player.png")
 
 MOVEMENT_SPEED_WALKING = 60
 MOVEMENT_SPEED_RUNNING = 180
-ANIMATION_SPEED = 0.05
+ANIMATION_SPEED = 5
 
 
 class Assets(TypedDict):
     map_1: TiledMap
+    map_2: TiledMap
     player_sprites: dict[tuple[MovementDirection, MovementStatus], list[pygame.surface.Surface]]
 
 
@@ -98,6 +99,7 @@ class Game:
     player: Player
     collision_group: CollisionGroup
     entities: list[Entity]
+    warps: dict[str, Warps]
     _assets: Assets
 
     def __init__(self: Self) -> None:
@@ -107,21 +109,26 @@ class Game:
         self.camera = Camera()
         self.collision_group = CollisionGroup()
         self.entities = []
+        self.warps = {}
         self.load_assets()
         self.init_map("map_1", "warp-targets", "target_1")
 
     def load_assets(self: Self) -> None:
         self._assets = {
             "map_1": TiledMap(MAPS_DIR / "map_1.tmx"),
+            "map_2": TiledMap(MAPS_DIR / "map_2.tmx"),
             "player_sprites": load_player_sprites(),
         }
 
     def init_map(
         self: Self,
-        name: Literal["map_1"],
+        name: Literal["map_1", "map_2"],
         object_group: str,
         object_name: str,
     ) -> None:
+        self.camera.clear()
+        self.collision_group.clear()
+        self.entities.clear()
         tiled_map = self._assets[name]
         for x, y, surface in tiled_map.get_layer("background").tiles():
             tile = Tile(
@@ -132,6 +139,10 @@ class Game:
             self.camera.append(tile)
         for obj in tiled_map.get_object_group("walls"):
             self.collision_group.append(obj.rect)
+        for obj in tiled_map.get_object_group("warps"):
+            if obj.name is None:
+                continue
+            self.warps[obj.name] = Warps(position=obj.position)
         obj = tiled_map.get_object_group(object_group).get_object(object_name)
         self.player = Player(
             position=obj.position,
@@ -152,6 +163,11 @@ class Game:
             for entity in self.entities:
                 entity.update(dt)
             self.draw()
+            if not self.player.moving:
+                for name, warp in self.warps.items():
+                    if warp.rect == self.player.hitbox:
+                        if name == "warp_2":
+                            self.init_map("map_2", "warp-targets", "target_1")
             dt = self.clock.tick(FPS) / 1000
 
     def handle_event(self: Self, event: pygame.event.Event) -> None:
@@ -277,10 +293,9 @@ class Entity(Tile):
     movement_vector: pygame.math.Vector2
     movement_direction: MovementDirection
     movement_status: MovementStatus
-    _moving: bool = False
+    moving: bool = False
     collision_group: CollisionGroup | None
     animations: dict[tuple[MovementDirection, MovementStatus], list[pygame.surface.Surface]]
-    animation_speed: float = ANIMATION_SPEED
     _animation_index: float = 0  # XXX: animation interruption
 
     def __init__(
@@ -327,8 +342,7 @@ class Entity(Tile):
         vector: pygame.math.Vector2,
         run: bool = False,  # noqa: FBT001, FBT002
     ) -> None:
-        # XXX: implement throttle here
-        # if running, bypass throttle
+        # XXX: implement throttle here; if running, bypass throttle
         if self.movement_direction != direction:
             self.movement_direction = direction
             return
@@ -337,10 +351,10 @@ class Entity(Tile):
             self.movement_status = MovementStatus.RUNNING
         else:
             self.movement_status = MovementStatus.WALKING
-        self._moving = True
+        self.moving = True
 
     def move_stop(self: Self) -> None:
-        self._moving = False
+        self.moving = False
         self.movement_vector = pygame.math.Vector2()
         self.movement_status = MovementStatus.IDLE
 
@@ -349,10 +363,10 @@ class Entity(Tile):
         self.set_animation_frame(dt)
         self.update_position(dt)
 
-    def set_animation_frame(self: Self, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+    def set_animation_frame(self: Self, dt: float) -> None:
         with suppress(KeyError):
             frames = self.animations[(self.movement_direction, self.movement_status)]
-            self._animation_index = (self._animation_index + self.animation_speed) % len(frames)
+            self._animation_index = (self._animation_index + ANIMATION_SPEED * dt) % len(frames)
             self.surface = frames[int(self._animation_index)]
 
     def update_position(self: Self, dt: float) -> None:
@@ -392,7 +406,7 @@ class Entity(Tile):
 @final
 class Player(Entity):
     def get_input(self: Self) -> None:
-        if self._moving:
+        if self.moving:
             return
         keys = pygame.key.get_pressed()
         keys_down = keys[pygame.constants.K_DOWN] or keys[pygame.constants.K_s]
@@ -412,6 +426,13 @@ class Player(Entity):
         if keys_left:
             self.move_left(run=keys_run)
             return
+
+
+class Warps:
+    rect: pygame.rect.FRect
+
+    def __init__(self: Self, position: Point) -> None:
+        self.rect = pygame.rect.FRect(position, TILE_SIZE)
 
 
 class TiledMap:
@@ -515,8 +536,8 @@ class TiledObjectGroup:
         self._parent = parent
         self.name = node.attrib["name"]
         self.id = int(node.attrib["id"])
-        self.visible = parse_bool(node.attrib["visible"])
-        self.locked = parse_bool(node.attrib["locked"])
+        self.visible = parse_bool(node.attrib.get("visible", "1"))
+        self.locked = parse_bool(node.attrib.get("locked", "0"))
         self.objects = [TiledObject(el, self) for el in node.findall("object")]
         self.objects_by_name = {t.name: t for t in self.objects if t.name is not None}
         self.objects_by_id = {t.id: t for t in self.objects}
