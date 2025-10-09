@@ -1,12 +1,11 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
+# - double high npc & player sprites
 # - add map scrolling
 # - add more maps
-# - npcs can walk in a area (not just a path)
-# - double high npc & player sprites
-# - use ray casting for line of sight
 # - add map transitions
+# - npcs can walk in a area (not just a path)
 # - multi height map
 # - update get_pressed to use events
 # - optimize drawing (only redraw changed parts)
@@ -500,18 +499,20 @@ class Lancer(Character):
         raise ValueError(msg)
 
     def get_line_of_sight(self: Self) -> list[pygame.typing.Point]:
-        # XXX: update to use ray casting
         x, y = self.position
-        if self.direction == Direction.DOWN:
-            return [(x, y + i) for i in range(1, self.line_of_sight_distance + 1)]
-        if self.direction == Direction.UP:
-            return [(x, y - i) for i in range(1, self.line_of_sight_distance + 1)]
-        if self.direction == Direction.RIGHT:
-            return [(x + i, y) for i in range(1, self.line_of_sight_distance + 1)]
-        if self.direction == Direction.LEFT:
-            return [(x - i, y) for i in range(1, self.line_of_sight_distance + 1)]
-        msg = "Invalid direction"
-        raise ValueError(msg)
+        dx, dy = {
+            Direction.DOWN: (0, 1),
+            Direction.UP: (0, -1),
+            Direction.RIGHT: (1, 0),
+            Direction.LEFT: (-1, 0),
+        }[self.direction]
+        line_of_sight: list[pygame.typing.Point] = []
+        for i in range(1, self.line_of_sight_distance + 1):
+            next_position = (x + dx * i, y + dy * i)
+            if not self.game.map_data.is_walkable(next_position):
+                break
+            line_of_sight.append(next_position)
+        return line_of_sight
 
 
 class MovementGenerator[T]:
