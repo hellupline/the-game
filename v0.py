@@ -1,10 +1,10 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
-# - double high npc & player sprites
 # - add map scrolling
 # - add more maps
 # - add map transitions
+# - combine npc battles into one single battle
 # - npcs can walk in a area (not just a path)
 # - multi height map
 # - update get_pressed to use events
@@ -286,10 +286,11 @@ class Character:
     position: pygame.typing.Point
     surface: pygame.surface.Surface
     rect: pygame.rect.FRect
+    hitbox: pygame.rect.FRect
     direction: Direction
     movement_type: MovementType
     next_position: pygame.typing.Point | None
-    next_rect_position: pygame.typing.Point | None
+    next_hitbox_position: pygame.typing.Point | None
     moving: bool
     _sprites: dict[Direction, pygame.surface.Surface]
     _character_type: Literal["player", "npc"] = "npc"
@@ -306,17 +307,20 @@ class Character:
         self.position = position
         self.surface = self._sprites[Direction.DOWN]
         x, y = position
-        self.rect = BASE_TILE.move(x * _TILE_SIZE, y * _TILE_SIZE)
+        self.rect = self.surface.get_frect()
+        self.hitbox = BASE_TILE.move(x * _TILE_SIZE, y * _TILE_SIZE)
         self.direction = Direction.DOWN
         self.movement_type = MovementType.WALKING
         self.next_position = None
-        self.next_rect_position = None
+        self.next_hitbox_position = None
         self.moving = False
+        self.rect.midbottom = self.hitbox.midbottom
 
     def set_position(self: Self, position: pygame.typing.Point) -> None:
         self.position = position
         x, y = position
-        self.rect.topleft = (x * _TILE_SIZE, y * _TILE_SIZE)
+        self.hitbox.topleft = (x * _TILE_SIZE, y * _TILE_SIZE)
+        self.rect.midbottom = self.hitbox.midbottom
 
     def move(self: Self, position: pygame.typing.Point) -> bool:
         if self.update_direction(position):
@@ -325,33 +329,34 @@ class Character:
             return False
         self.next_position = position
         x, y = position
-        self.next_rect_position = (x * _TILE_SIZE, y * _TILE_SIZE)
+        self.next_hitbox_position = (x * _TILE_SIZE, y * _TILE_SIZE)
         self.moving = True
         return True
 
     def update(self: Self, dt: float) -> bool:
         self.surface = self._sprites[self.direction]
-        if self.next_rect_position == self.rect.topleft:
+        if self.next_hitbox_position == self.hitbox.topleft:
             self.commit_position()
             return True
-        if self.next_rect_position is not None:
+        if self.next_hitbox_position is not None:
             self.update_position(dt)
             return True
         return False
 
     def update_position(self: Self, dt: float) -> None:
-        if self.next_rect_position is None:
+        if self.next_hitbox_position is None:
             return
         max_distance = self.movement_type.speed() * dt
-        current = pygame.math.Vector2(self.rect.topleft)
-        current.move_towards_ip(self.next_rect_position, max_distance)
-        self.rect.topleft = current
+        current = pygame.math.Vector2(self.hitbox.topleft)
+        current.move_towards_ip(self.next_hitbox_position, max_distance)
+        self.hitbox.topleft = current
+        self.rect.midbottom = self.hitbox.midbottom
 
     def commit_position(self: Self) -> None:
         if self.next_position is not None:
             self.position = self.next_position
         self.next_position = None
-        self.next_rect_position = None
+        self.next_hitbox_position = None
         self.moving = False
 
     def update_direction(self: Self, position: pygame.typing.Point) -> bool:
@@ -373,39 +378,6 @@ class Character:
         if x < current_x:
             return Direction.LEFT
         return self.direction
-
-
-@final
-class Player(Character):
-    _character_type = "player"
-
-    def __init__(
-        self: Self,
-        game: Game,
-        position: pygame.typing.Point,
-    ) -> None:
-        sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, GREEN),
-            Direction.UP: _draw_direction_arrow(Direction.UP, GREEN),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, GREEN),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, GREEN),
-        }
-        super().__init__(game, position, sprites)
-
-    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
-        x, y = self.position
-        if keys[pygame.constants.K_DOWN] and not self.moving:
-            _ = self.move((x, y + 1))
-        elif keys[pygame.constants.K_UP] and not self.moving:
-            _ = self.move((x, y - 1))
-        elif keys[pygame.constants.K_RIGHT] and not self.moving:
-            _ = self.move((x + 1, y))
-        elif keys[pygame.constants.K_LEFT] and not self.moving:
-            _ = self.move((x - 1, y))
-        if keys[pygame.constants.K_LSHIFT]:
-            self.movement_type = MovementType.RUNNING
-        else:
-            self.movement_type = MovementType.WALKING
 
 
 @final
@@ -515,6 +487,39 @@ class Lancer(Character):
         return line_of_sight
 
 
+@final
+class Player(Character):
+    _character_type = "player"
+
+    def __init__(
+        self: Self,
+        game: Game,
+        position: pygame.typing.Point,
+    ) -> None:
+        sprites = {
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, GREEN),
+            Direction.UP: _draw_direction_arrow(Direction.UP, GREEN),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, GREEN),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, GREEN),
+        }
+        super().__init__(game, position, sprites)
+
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
+        x, y = self.position
+        if keys[pygame.constants.K_DOWN] and not self.moving:
+            _ = self.move((x, y + 1))
+        elif keys[pygame.constants.K_UP] and not self.moving:
+            _ = self.move((x, y - 1))
+        elif keys[pygame.constants.K_RIGHT] and not self.moving:
+            _ = self.move((x + 1, y))
+        elif keys[pygame.constants.K_LEFT] and not self.moving:
+            _ = self.move((x - 1, y))
+        if keys[pygame.constants.K_LSHIFT]:
+            self.movement_type = MovementType.RUNNING
+        else:
+            self.movement_type = MovementType.WALKING
+
+
 class MovementGenerator[T]:
     items: list[T]
     _counter: int = 0
@@ -582,18 +587,22 @@ class LancerState(Enum):
 
 
 def _draw_direction_arrow(direction: Direction, color: pygame.color.Color) -> pygame.surface.Surface:
+    head = pygame.rect.FRect((0, 0), TILE_SIZE)
+    body = pygame.rect.FRect((0, _TILE_SIZE), TILE_SIZE)
     if direction == Direction.DOWN:
-        points = [BASE_TILE.topleft, BASE_TILE.topright, BASE_TILE.midbottom, BASE_TILE.topleft]
+        pody_points = [body.topleft, body.topright, body.midbottom, body.topleft]
     elif direction == Direction.UP:
-        points = [BASE_TILE.bottomleft, BASE_TILE.bottomright, BASE_TILE.midtop, BASE_TILE.bottomleft]
+        pody_points = [body.bottomleft, body.bottomright, body.midtop, body.bottomleft]
     elif direction == Direction.RIGHT:
-        points = [BASE_TILE.topleft, BASE_TILE.bottomleft, BASE_TILE.midright, BASE_TILE.topleft]
+        pody_points = [body.topleft, body.bottomleft, body.midright, body.topleft]
     elif direction == Direction.LEFT:
-        points = [BASE_TILE.topright, BASE_TILE.bottomright, BASE_TILE.midleft, BASE_TILE.topright]
-    surface = pygame.surface.Surface((_TILE_SIZE, _TILE_SIZE))
+        pody_points = [body.topright, body.bottomright, body.midleft, body.topright]
+    rect = pygame.rect.FRect((0, 0), (_TILE_SIZE, 2 * _TILE_SIZE))
+    surface = pygame.surface.Surface(rect.size)
     surface.set_colorkey(BLUE)
     _ = surface.fill(BLUE)
-    _ = pygame.draw.polygon(surface, color, points)
+    _ = pygame.draw.circle(surface, color, head.center, _TILE_SIZE // 4)
+    _ = pygame.draw.polygon(surface, color, pody_points)
     return surface
 
 
