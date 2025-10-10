@@ -157,19 +157,18 @@ class Game(Window):
         if self.game_state == GameState.npc_chasing:
             for npc in self.npc:
                 _ = npc.update(dt)
-            return True
+            return False
         if self.game_state == GameState.dialog:
             self.update_dialog()
-            return True
+            return False
         if self.game_state == GameState.menu:
             self.update_menu()
-            return True
+            return False
         if self.game_state == GameState.battle:
-            return True
+            return False
         if self.game_state == GameState.overworld:
             self.update_overworld(dt)
-            return True
-        return False
+        return True
 
     def update_dialog(self: Self) -> None:
         self.dialog.run()
