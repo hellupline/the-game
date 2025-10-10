@@ -107,7 +107,7 @@ class Game(Window):
         pygame.display.set_caption("The Game")
         super().__init__(surface, font)
         self.game_state = GameState.overworld
-        self.map_data = MapData(map_data=MAP_DATA)
+        self.map_data = MapData(map_data=MAP1_DATA)
         self.npc = [
             Lancer(game=self, position=position, path=NPC_PATH[i])
             for i, position in enumerate(self.map_data.npc_positions)
@@ -611,7 +611,7 @@ def main() -> None:
     Game().run()
 
 
-MAP_DATA = """
+MAP1_DATA = """
 HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 H............................H
 H.HHHHH.....HHHHH......1.....H
@@ -634,7 +634,7 @@ H............................H
 HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 """
 
-NPC_PATH1 = """
+MAP1_NPC1_PATH = """
 ..............................
 ..............................
 .....................cbavut...
@@ -657,7 +657,7 @@ NPC_PATH1 = """
 ..............................
 """
 
-NPC_PATH2 = """
+MAP1_NPC2_PATH = """
 ..............................
 ..............................
 ..............................
@@ -680,7 +680,7 @@ NPC_PATH2 = """
 ..............................
 """
 
-NPC_PATH = [NPC_PATH1, NPC_PATH2]
+NPC_PATH = [MAP1_NPC1_PATH, MAP1_NPC2_PATH]
 
 
 if __name__ == "__main__":
