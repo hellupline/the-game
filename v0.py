@@ -400,6 +400,7 @@ class Character:
         return True
 
     def update(self: Self, dt: float) -> bool:
+        # XXX: invert this
         self.surface = self._sprites[self.direction]
         if self.next_hitbox_position == self.hitbox.topleft:
             self.commit_position()
