@@ -1,13 +1,12 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
-# - add more maps
-# - add map transitions
 # - combine npc battles into one single battle
 # - npcs can walk in a area (not just a path)
 # - multi height map
 # - update get_pressed to use events
 # - optimize drawing (only redraw changed parts)
+# - delegate more actions to main game loop ?
 
 from __future__ import annotations
 
@@ -47,7 +46,20 @@ FPS = 60
 _TILE_SIZE = 32
 TILE_SIZE = (_TILE_SIZE, _TILE_SIZE)
 
-BASE_TILE = pygame.rect.FRect((0, 0), TILE_SIZE)
+
+WALL_COLOR = WHITE
+FLOOR_COLOR = BLACK
+WARP_COLOR = BLUE
+PLAYER_COLOR = GREEN
+NPC_COLOR = YELLOW
+NPC_CHASING_COLOR = RED
+NPC_DONE_COLOR = GREY
+NPC_PATH_COLOR = CYAN
+NPC_PATH_NEXT_COLOR = YELLOW
+NPC_RAYCAST_COLOR = MAGENTA
+
+WALKING_SPEED = 200
+RUNNING_SPEED = 500
 
 
 class Window:
@@ -99,21 +111,34 @@ class Game(Window):
     player: Player
     menu: Menu
     dialog: Dialog
+    _map_name: str
+    _map_data_cache: dict[str, MapData]
 
     def __init__(self: Self, width: int = 960, height: int = 640) -> None:
         surface = pygame.display.set_mode((width, height))
         font = pygame.font.Font(pygame.font.get_default_font())
         pygame.display.set_caption("The Game")
         super().__init__(surface, font)
+        self._map_data_cache = {
+            MAP1_NAME: MapData(map_data=MAP1_DATA),
+            MAP2_NAME: MapData(map_data=MAP2_DATA),
+        }
         self.game_state = GameState.overworld
-        self.map_data = MapData(map_data=MAP1_DATA)
-        self.npc = [
-            Lancer(game=self, position=position, path=MAP1_NPC_PATH[i])
-            for i, position in enumerate(self.map_data.npc_positions)
-        ]
-        self.player = Player(game=self, position=self.map_data.player_position)
+        self.load_map(MAP1_NAME)
         self.menu = Menu(surface=self.surface, font=self.font)
         self.dialog = Dialog(surface=self.surface, font=self.font)
+
+    def load_map(self: Self, map_name: str) -> None:
+        self._map_name = map_name
+        self.map_data = self._map_data_cache[map_name]
+        if map_name == MAP1_NAME:
+            self.npc = [
+                Lancer(game=self, position=position, path=MAP1_NPC_PATH[i])
+                for i, position in enumerate(self.map_data.npc_positions)
+            ]
+        else:
+            self.npc = []
+        self.player = Player(game=self, position=self.map_data.player_position)
 
     @override
     def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
@@ -128,7 +153,7 @@ class Game(Window):
             self.game_state = GameState.overworld
 
     @override
-    def update(self: Self, dt: float) -> bool:
+    def update(self: Self, dt: float) -> bool:  # noqa: C901
         if self.game_state == GameState.npc_chasing:
             for npc in self.npc:
                 _ = npc.update(dt)
@@ -147,6 +172,11 @@ class Game(Window):
             for npc in self.npc:
                 _ = npc.update(dt)
             _ = self.player.update(dt)
+            if self.map_data.is_warp(self.player.position):
+                if self._map_name == MAP1_NAME:
+                    self.load_map(MAP2_NAME)
+                elif self._map_name == MAP2_NAME:
+                    self.load_map(MAP1_NAME)
         return True
 
     @override
@@ -165,7 +195,12 @@ class Game(Window):
     def draw_map(self: Self, surface: pygame.surface.Surface) -> None:
         for (x, y), tile in self.map_data.data.items():
             if tile == TileType.WALL:
-                _ = pygame.draw.rect(surface, WHITE, BASE_TILE.move(x * _TILE_SIZE, y * _TILE_SIZE))
+                rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
+                _ = pygame.draw.rect(surface, WALL_COLOR, rect)
+            elif tile == TileType.WARP:
+                rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
+                _ = pygame.draw.rect(surface, FLOOR_COLOR, rect)
+                _ = pygame.draw.circle(surface, BLUE, rect.center, _TILE_SIZE // 4)
 
     def draw_grid(self: Self, surface: pygame.surface.Surface) -> None:
         rect = surface.get_rect()
@@ -184,9 +219,9 @@ class Game(Window):
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
                 rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
                 if position == npc.patrol_path.next():
-                    _ = pygame.draw.rect(surface, YELLOW, rect)
+                    _ = pygame.draw.rect(surface, NPC_PATH_NEXT_COLOR, rect)
                 else:
-                    _ = pygame.draw.rect(surface, CYAN, rect)
+                    _ = pygame.draw.rect(surface, NPC_PATH_COLOR, rect)
 
     def draw_npc_line_of_sight(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
@@ -195,7 +230,7 @@ class Game(Window):
                 x, y = position
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
                 rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
-                _ = pygame.draw.rect(surface, MAGENTA, rect, width=1)
+                _ = pygame.draw.rect(surface, NPC_RAYCAST_COLOR, rect, width=1)
 
     def draw_characters(self: Self, surface: pygame.surface.Surface) -> None:
         for npc in self.npc:
@@ -279,7 +314,7 @@ class MapData:
         self.npc_positions = []
         for y, row in enumerate(map_data.strip().splitlines()):
             for x, tile in enumerate(row):
-                if tile in (".", "H"):
+                if tile in (".", "H", "O"):
                     self.data[(x, y)] = TileType(tile)
                 elif tile in ("1", "2"):
                     self.npc_positions.append((x, y))
@@ -297,6 +332,9 @@ class MapData:
 
     def is_walkable(self: Self, position: pygame.typing.Point) -> bool:
         return self.data.get(position) != TileType.WALL
+
+    def is_warp(self: Self, position: pygame.typing.Point) -> bool:
+        return self.data.get(position) == TileType.WARP
 
 
 class Character:
@@ -327,7 +365,7 @@ class Character:
         self.surface = self._sprites[Direction.DOWN]
         x, y = position
         self.rect = self.surface.get_frect()
-        self.hitbox = BASE_TILE.move(x * _TILE_SIZE, y * _TILE_SIZE)
+        self.hitbox = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
         self.direction = Direction.DOWN
         self.movement_type = MovementType.WALKING
         self.next_position = None
@@ -415,22 +453,22 @@ class Lancer(Character):
         line_of_sight_distance: int = 5,
     ) -> None:
         self._normal_sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, YELLOW),
-            Direction.UP: _draw_direction_arrow(Direction.UP, YELLOW),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, YELLOW),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, YELLOW),
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, NPC_COLOR),
+            Direction.UP: _draw_direction_arrow(Direction.UP, NPC_COLOR),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, NPC_COLOR),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, NPC_COLOR),
         }
         self._angry_sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, RED),
-            Direction.UP: _draw_direction_arrow(Direction.UP, RED),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, RED),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, RED),
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, NPC_CHASING_COLOR),
+            Direction.UP: _draw_direction_arrow(Direction.UP, NPC_CHASING_COLOR),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, NPC_CHASING_COLOR),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, NPC_CHASING_COLOR),
         }
         self._tired_sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, GREY),
-            Direction.UP: _draw_direction_arrow(Direction.UP, GREY),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, GREY),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, GREY),
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, NPC_DONE_COLOR),
+            Direction.UP: _draw_direction_arrow(Direction.UP, NPC_DONE_COLOR),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, NPC_DONE_COLOR),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, NPC_DONE_COLOR),
         }
         self.lancer_state = LancerState.patrolling
         self.patrol_path = MovementGenerator(self.load_path(path))
@@ -516,10 +554,10 @@ class Player(Character):
         position: pygame.typing.Point,
     ) -> None:
         sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, GREEN),
-            Direction.UP: _draw_direction_arrow(Direction.UP, GREEN),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, GREEN),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, GREEN),
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, PLAYER_COLOR),
+            Direction.UP: _draw_direction_arrow(Direction.UP, PLAYER_COLOR),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, PLAYER_COLOR),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, PLAYER_COLOR),
         }
         super().__init__(game, position, sprites)
 
@@ -577,15 +615,16 @@ class MovementType(Enum):
 
     def speed(self: Self) -> float:
         if self == MovementType.WALKING:
-            return 200.0
+            return WALKING_SPEED
         if self == MovementType.RUNNING:
-            return 400.0
+            return RUNNING_SPEED
         return 0.0
 
 
 class TileType(Enum):
     EMPTY = "."
     WALL = "H"
+    WARP = "O"
     NPC1 = "1"
     NPC2 = "2"
     PLAYER = "p"
@@ -625,6 +664,7 @@ def _draw_direction_arrow(direction: Direction, color: pygame.color.Color) -> py
     return surface
 
 
+MAP1_NAME = "map1"
 MAP1_DATA = """
 HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 H.....................................................................................H
@@ -667,7 +707,7 @@ H...............................................................................
 H...HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH....................................................H
 H...H............................H....................................................H
 H...H............................H....................................................H
-H...H............................H....................................................H
+H...H..O.........................H....................................................H
 H...H............................H....................................................H
 H...H............................H....................................................H
 H...H............................H....................................................H
@@ -788,6 +828,64 @@ MAP1_NPC2_PATH = """
 """
 
 MAP1_NPC_PATH = [MAP1_NPC1_PATH, MAP1_NPC2_PATH]
+
+
+MAP2_NAME = "map2"
+MAP2_DATA = """
+HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+H...HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH....................................................H
+H...H............................H....................................................H
+H...H............................H....................................................H
+H...H..O.........................H....................................................H
+H...H............................H....................................................H
+H...H............................H....................................................H
+H...H............................H...............p....................................H
+H...H............................H....................................................H
+H...HHHHHHHHHHHHHHHHH.....HHHHHHHH....................................................H
+H.....................................................................................H
+H.....................................................................................H
+H.....................................................................................H
+HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
+"""
+
+MAP2_NPC_PATH = []
 
 
 def main() -> None:
