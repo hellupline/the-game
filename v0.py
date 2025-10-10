@@ -153,31 +153,40 @@ class Game(Window):
             self.game_state = GameState.overworld
 
     @override
-    def update(self: Self, dt: float) -> bool:  # noqa: C901
+    def update(self: Self, dt: float) -> bool:
         if self.game_state == GameState.npc_chasing:
             for npc in self.npc:
                 _ = npc.update(dt)
             return False
         if self.game_state == GameState.dialog:
-            self.dialog.run()
-            self.game_state = GameState.overworld
+            self.update_dialog()
             return False
         if self.game_state == GameState.menu:
-            self.menu.run()
-            self.game_state = GameState.overworld
+            self.update_menu()
             return False
         if self.game_state == GameState.battle:
             return False
         if self.game_state == GameState.overworld:
-            for npc in self.npc:
-                _ = npc.update(dt)
-            _ = self.player.update(dt)
-            if self.map_data.is_warp(self.player.position):
-                if self._map_name == MAP1_NAME:
-                    self.load_map(MAP2_NAME)
-                elif self._map_name == MAP2_NAME:
-                    self.load_map(MAP1_NAME)
+            self.update_overworld(dt)
         return True
+
+    def update_dialog(self: Self) -> None:
+        self.dialog.run()
+        self.game_state = GameState.overworld
+
+    def update_menu(self: Self) -> None:
+        self.menu.run()
+        self.game_state = GameState.overworld
+
+    def update_overworld(self: Self, dt: float) -> None:
+        for npc in self.npc:
+            _ = npc.update(dt)
+        _ = self.player.update(dt)
+        if self.map_data.is_warp(self.player.position):
+            if self._map_name == MAP1_NAME:
+                self.load_map(MAP2_NAME)
+            elif self._map_name == MAP2_NAME:
+                self.load_map(MAP1_NAME)
 
     @override
     def draw(self: Self) -> None:
