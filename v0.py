@@ -5,12 +5,14 @@
 # - npcs can walk in a area (not just a path)
 # - multi height map
 # - update get_pressed to use events
+# - separate window from game logic
 # - optimize drawing (only redraw changed parts)
 # - delegate more actions to main game loop ?
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
+from enum import auto
 from operator import itemgetter
 from typing import Literal
 from typing import Self
@@ -95,6 +97,7 @@ class Window:
         pass
 
     def update(self: Self, dt: float) -> bool:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+        """Return true if event should continue to be processed"""
         return True
 
     def draw(self: Self) -> None:
@@ -105,12 +108,12 @@ class Window:
 
 
 class Game(Window):
-    game_state: GameState
+    state: GameState
     map_data: MapData
-    npc: list[Lancer]
-    player: Player
     menu: Menu
     dialog: Dialog
+    npc: list[Lancer]
+    player: Player
     _map_name: str
     _map_data_cache: dict[str, MapData]
 
@@ -123,10 +126,10 @@ class Game(Window):
             MAP1_NAME: MapData(map_data=MAP1_DATA),
             MAP2_NAME: MapData(map_data=MAP2_DATA),
         }
-        self.game_state = GameState.overworld
-        self.load_map(MAP1_NAME)
+        self.state = GameState.overworld
         self.menu = Menu(surface=self.surface, font=self.font)
         self.dialog = Dialog(surface=self.surface, font=self.font)
+        self.load_map(MAP1_NAME)
 
     def load_map(self: Self, map_name: str) -> None:
         self._map_name = map_name
@@ -142,41 +145,47 @@ class Game(Window):
 
     @override
     def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
-        if self.game_state == GameState.overworld:
+        if self.state == GameState.overworld:
             if keys[pygame.constants.K_ESCAPE] or keys[pygame.constants.K_q]:
                 self.quit()
-            elif keys[pygame.constants.K_RETURN] and not self.player.moving:
+            elif keys[pygame.constants.K_RETURN] and self.player.movement_state != MovementState.moving:
                 self.show_menu()
             else:
                 self.player.handle_keys(keys)
-        elif self.game_state == GameState.menu and keys[pygame.constants.K_RETURN]:
-            self.game_state = GameState.overworld
+        elif self.state == GameState.menu and keys[pygame.constants.K_RETURN]:
+            self.state = GameState.overworld
 
     @override
     def update(self: Self, dt: float) -> bool:
-        if self.game_state == GameState.npc_chasing:
-            for npc in self.npc:
-                _ = npc.update(dt)
+        if self.state == GameState.player_found:
+            self.update_npc_chasing(dt)
             return False
-        if self.game_state == GameState.dialog:
+        if self.state == GameState.dialog:
             self.update_dialog()
             return False
-        if self.game_state == GameState.menu:
+        if self.state == GameState.menu:
             self.update_menu()
             return False
-        if self.game_state == GameState.battle:
+        if self.state == GameState.battle:
             return False
-        if self.game_state == GameState.overworld:
+        if self.state == GameState.overworld:
             self.update_overworld(dt)
         return True
 
+    def update_npc_chasing(self: Self, dt: float) -> None:
+        for npc in self.npc:
+            if npc.lancer_state != LancerState.chase:
+                continue
+            _ = npc.update(dt)
+            break
+
     def update_dialog(self: Self) -> None:
         self.dialog.run()
-        self.game_state = GameState.overworld
+        self.state = GameState.overworld
 
     def update_menu(self: Self) -> None:
         self.menu.run()
-        self.game_state = GameState.overworld
+        self.state = GameState.overworld
 
     def update_overworld(self: Self, dt: float) -> None:
         for npc in self.npc:
@@ -221,8 +230,6 @@ class Game(Window):
     def draw_npc_path(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
         for npc in self.npc:
-            if npc.patrol_path is None:
-                continue
             for position in npc.patrol_path.items:
                 x, y = position
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
@@ -271,10 +278,10 @@ class Game(Window):
         return self.player.position
 
     def show_menu(self: Self) -> None:
-        self.game_state = GameState.menu
+        self.state = GameState.menu
 
     def show_dialog(self: Self) -> None:
-        self.game_state = GameState.dialog
+        self.state = GameState.dialog
 
 
 class Menu(Window):
@@ -322,12 +329,12 @@ class MapData:
         self.data = {}
         self.npc_positions = []
         for y, row in enumerate(map_data.strip().splitlines()):
-            for x, tile in enumerate(row):
-                if tile in (".", "H", "O"):
+            for x, tile in enumerate(map(TileType, row)):
+                if tile in (TileType.EMPTY, TileType.WALL, TileType.WARP):
                     self.data[(x, y)] = TileType(tile)
-                elif tile in ("1", "2"):
+                elif tile in (TileType.NPC1, TileType.NPC2):
                     self.npc_positions.append((x, y))
-                elif tile == "p":
+                elif tile == TileType.PLAYER:
                     self.player_position = (x, y)
 
     def get_size(self: Self) -> pygame.typing.Point:
@@ -357,9 +364,10 @@ class Character:
     movement_type: MovementType
     next_position: pygame.typing.Point | None
     next_hitbox_position: pygame.typing.Point | None
-    moving: bool
     _sprites: dict[Direction, pygame.surface.Surface]
     _character_type: Literal["player", "npc"] = "npc"
+
+    movement_state: MovementState
 
     def __init__(
         self: Self,
@@ -370,17 +378,16 @@ class Character:
         self.id = uuid4()
         self.game = game
         self._sprites = sprites
-        self.position = position
         self.surface = self._sprites[Direction.DOWN]
-        x, y = position
         self.rect = self.surface.get_frect()
-        self.hitbox = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
+        self.hitbox = pygame.rect.FRect((0, 0), TILE_SIZE)
         self.direction = Direction.DOWN
         self.movement_type = MovementType.WALKING
         self.next_position = None
         self.next_hitbox_position = None
-        self.moving = False
         self.rect.midbottom = self.hitbox.midbottom
+        self.movement_state = MovementState.idle
+        self.set_position(position)
 
     def set_position(self: Self, position: pygame.typing.Point) -> None:
         self.position = position
@@ -388,52 +395,58 @@ class Character:
         self.hitbox.topleft = (x * _TILE_SIZE, y * _TILE_SIZE)
         self.rect.midbottom = self.hitbox.midbottom
 
-    def move(self: Self, position: pygame.typing.Point) -> bool:
-        if self.update_direction(position):
-            return False
-        if not self.game.is_walkable(position, self._character_type):
-            return False
+    def set_next_position(self: Self, position: pygame.typing.Point) -> None:
         self.next_position = position
         x, y = position
         self.next_hitbox_position = (x * _TILE_SIZE, y * _TILE_SIZE)
-        self.moving = True
+        self.movement_state = MovementState.moving
+
+    def move(self: Self, position: pygame.typing.Point) -> bool:
+        if (direction := self.get_direction(position)) != self.direction:
+            self.direction = direction
+            return False
+        if not self.game.is_walkable(position, self._character_type):
+            return False
+        self.set_next_position(position)
         return True
 
     def update(self: Self, dt: float) -> bool:
-        # XXX: invert this
-        self.surface = self._sprites[self.direction]
-        if self.next_hitbox_position == self.hitbox.topleft:
-            self.commit_position()
-            return True
-        if self.next_hitbox_position is not None:
-            self.update_position(dt)
-            return True
+        if self.surface is not self._sprites[self.direction]:
+            self.surface = self._sprites[self.direction]
+            return False
+        if self.movement_state == MovementState.moving:
+            return self.handle_state__moving(dt)
+        if self.movement_state == MovementState.idle:
+            return self.handle_state__idle()
         return False
 
-    def update_position(self: Self, dt: float) -> None:
+    def handle_state__moving(self: Self, dt: float) -> bool:
+        if self.next_hitbox_position == self.hitbox.topleft:
+            self.commit_position()
+            return False
+        return self.update_position(dt)
+
+    def handle_state__idle(self: Self) -> bool:
+        return False
+
+    def update_position(self: Self, dt: float) -> bool:
         if self.next_hitbox_position is None:
-            return
+            return False
         max_distance = self.movement_type.speed() * dt
         current = pygame.math.Vector2(self.hitbox.topleft)
         current.move_towards_ip(self.next_hitbox_position, max_distance)
         self.hitbox.topleft = current
         self.rect.midbottom = self.hitbox.midbottom
+        return True
 
     def commit_position(self: Self) -> None:
         if self.next_position is not None:
             self.position = self.next_position
         self.next_position = None
         self.next_hitbox_position = None
-        self.moving = False
+        self.movement_state = MovementState.idle
 
-    def update_direction(self: Self, position: pygame.typing.Point) -> bool:
-        direction = self.get_next_direction(position)
-        if direction == self.direction:
-            return False
-        self.direction = direction
-        return True
-
-    def get_next_direction(self: Self, position: pygame.typing.Point) -> Direction:
+    def get_direction(self: Self, position: pygame.typing.Point) -> Direction:
         current_x, current_y = self.position
         x, y = position
         if y > current_y:
@@ -450,10 +463,11 @@ class Character:
 @final
 class Lancer(Character):
     lancer_state: LancerState
-    patrol_path: MovementGenerator[pygame.typing.Point] | None
+    patrol_path: MovementGenerator[pygame.typing.Point]
     line_of_sight_distance: int
     _normal_sprites: dict[Direction, pygame.surface.Surface]
     _angry_sprites: dict[Direction, pygame.surface.Surface]
+    _tired_sprites: dict[Direction, pygame.surface.Surface]
 
     def __init__(
         self: Self,
@@ -480,12 +494,12 @@ class Lancer(Character):
             Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, NPC_DONE_COLOR),
             Direction.LEFT: _draw_direction_arrow(Direction.LEFT, NPC_DONE_COLOR),
         }
-        self.lancer_state = LancerState.patrolling
-        self.patrol_path = MovementGenerator(self.load_path(path))
+        self.lancer_state = LancerState.patrol
+        self.load_path(path)
         self.line_of_sight_distance = line_of_sight_distance
         super().__init__(game, position, self._normal_sprites)
 
-    def load_path(self: Self, path: str) -> list[pygame.typing.Point]:
+    def load_path(self: Self, path: str) -> None:
         items = [
             ((x, y), sequence)
             for y, row in enumerate(path.strip().splitlines())
@@ -493,35 +507,40 @@ class Lancer(Character):
             if sequence not in (".",)
         ]
         items = sorted(items, key=itemgetter(1))
-        return [*map(itemgetter(0), items)]
+        self.patrol_path = MovementGenerator([*map(itemgetter(0), items)])
 
     @override
     def update(self: Self, dt: float) -> bool:
         if super().update(dt):
             return True
-        return self.update_patrol()
+        if self.lancer_state == LancerState.patrol:
+            return self.update_patrol()
+        if self.lancer_state == LancerState.chase:
+            return self.update_chase()
+        return False
 
     def update_patrol(self: Self) -> bool:
-        player_position = self.game.get_player_position()
-        if self.lancer_state == LancerState.patrolling:
-            if player_position in self.get_line_of_sight():
-                self.game.game_state = GameState.npc_chasing
-                self.lancer_state = LancerState.chasing
-                self._sprites = self._angry_sprites
-                return True
-            if self.patrol_path is not None and self.move(next(self.patrol_path)):
-                self.patrol_path.advance()
-                return True
-        elif self.lancer_state == LancerState.chasing:
-            next_position = self.get_next_move(player_position)
-            if next_position == player_position:
-                self.game.game_state = GameState.overworld
-                self.lancer_state = LancerState.idle
-                self.game.show_dialog()
-                self._sprites = self._tired_sprites
-                return True
-            return self.move(next_position)
+        if self.game.get_player_position() in self.get_line_of_sight():
+            self.game.state = GameState.player_found
+            self.lancer_state = LancerState.chase
+            self._sprites = self._angry_sprites
+            return True
+        if self.move(next(self.patrol_path)):
+            self.patrol_path.advance()
+            return True
         return False
+
+    def update_chase(self: Self) -> bool:
+        # NOTE: use movement generator ?
+        player_position = self.game.get_player_position()
+        next_position = self.get_next_move(player_position)
+        if player_position == next_position:
+            self.game.state = GameState.overworld
+            self.lancer_state = LancerState.idle
+            self.game.show_dialog()
+            self._sprites = self._tired_sprites
+            return True
+        return self.move(next_position)
 
     def get_next_move(self: Self, position: pygame.typing.Point) -> pygame.typing.Point:
         target_x, target_y = position
@@ -573,13 +592,13 @@ class Player(Character):
 
     def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
         x, y = self.position
-        if keys[pygame.constants.K_DOWN] and not self.moving:
+        if keys[pygame.constants.K_DOWN] and self.movement_state != MovementState.moving:
             _ = self.move((x, y + 1))
-        elif keys[pygame.constants.K_UP] and not self.moving:
+        elif keys[pygame.constants.K_UP] and self.movement_state != MovementState.moving:
             _ = self.move((x, y - 1))
-        elif keys[pygame.constants.K_RIGHT] and not self.moving:
+        elif keys[pygame.constants.K_RIGHT] and self.movement_state != MovementState.moving:
             _ = self.move((x + 1, y))
-        elif keys[pygame.constants.K_LEFT] and not self.moving:
+        elif keys[pygame.constants.K_LEFT] and self.movement_state != MovementState.moving:
             _ = self.move((x - 1, y))
         if keys[pygame.constants.K_LSHIFT]:
             self.movement_type = MovementType.RUNNING
@@ -611,17 +630,17 @@ class MovementGenerator[T]:
         self._counter = (self._counter + 1) % len(self.items)
 
 
-class Direction(Enum):
-    DOWN = "down"
-    UP = "up"
-    RIGHT = "right"
-    LEFT = "left"
+class Direction(StrEnum):
+    DOWN = auto()
+    UP = auto()
+    RIGHT = auto()
+    LEFT = auto()
 
 
-class MovementType(Enum):
-    IDLE = "idle"
-    WALKING = "walking"
-    RUNNING = "running"
+class MovementType(StrEnum):
+    IDLE = auto()
+    WALKING = auto()
+    RUNNING = auto()
 
     def speed(self: Self) -> float:
         if self == MovementType.WALKING:
@@ -631,7 +650,7 @@ class MovementType(Enum):
         return 0.0
 
 
-class TileType(Enum):
+class TileType(StrEnum):
     EMPTY = "."
     WALL = "H"
     WARP = "O"
@@ -640,18 +659,23 @@ class TileType(Enum):
     PLAYER = "p"
 
 
-class GameState(Enum):
-    overworld = "overworld"
-    menu = "menu"
-    dialog = "dialog"
-    npc_chasing = "npc_chasing"
-    battle = "battle"
+class GameState(StrEnum):
+    overworld = auto()
+    menu = auto()
+    dialog = auto()
+    player_found = auto()
+    battle = auto()
 
 
-class LancerState(Enum):
-    idle = "idle"
-    patrolling = "patrolling"
-    chasing = "chasing"
+class MovementState(StrEnum):
+    moving = auto()
+    idle = auto()
+
+
+class LancerState(StrEnum):
+    idle = auto()
+    patrol = auto()
+    chase = auto()
 
 
 def _draw_direction_arrow(direction: Direction, color: pygame.color.Color) -> pygame.surface.Surface:
