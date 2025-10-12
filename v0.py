@@ -53,12 +53,12 @@ WALL_COLOR = WHITE
 FLOOR_COLOR = BLACK
 WARP_COLOR = BLUE
 PLAYER_COLOR = GREEN
-NPC_COLOR = YELLOW
-NPC_CHASING_COLOR = RED
-NPC_DONE_COLOR = GREY
-NPC_PATH_COLOR = CYAN
-NPC_PATH_NEXT_COLOR = YELLOW
-NPC_RAYCAST_COLOR = MAGENTA
+LANCER_COLOR = YELLOW
+LANCER_CHASING_COLOR = RED
+LANCER_DONE_COLOR = GREY
+LANCER_PATH_COLOR = CYAN
+LANCER_PATH_NEXT_COLOR = YELLOW
+LANCER_RAYCAST_COLOR = MAGENTA
 
 WALKING_SPEED = 200
 RUNNING_SPEED = 500
@@ -112,7 +112,8 @@ class Game(Window):
     map_data: MapData
     menu: Menu
     dialog: Dialog
-    npc: list[Lancer]
+    battle: Battle
+    lancer: list[Lancer]
     player: Player
     _map_name: str
     _map_data_cache: dict[str, MapData]
@@ -129,18 +130,19 @@ class Game(Window):
         self.state = GameState.overworld
         self.menu = Menu(surface=self.surface, font=self.font)
         self.dialog = Dialog(surface=self.surface, font=self.font)
+        self.battle = Battle(surface=self.surface, font=self.font)
         self.load_map(MAP1_NAME)
 
     def load_map(self: Self, map_name: str) -> None:
         self._map_name = map_name
         self.map_data = self._map_data_cache[map_name]
         if map_name == MAP1_NAME:
-            self.npc = [
-                Lancer(game=self, position=position, path=MAP1_NPC_PATH[i])
-                for i, position in enumerate(self.map_data.npc_positions)
+            self.lancer = [
+                Lancer(game=self, position=position, path=MAP1_LANCER_PATH[i])
+                for i, position in enumerate(self.map_data.lancer_positions)
             ]
         else:
-            self.npc = []
+            self.lancer = []
         self.player = Player(game=self, position=self.map_data.player_position)
 
     @override
@@ -158,44 +160,69 @@ class Game(Window):
     @override
     def update(self: Self, dt: float) -> bool:
         if self.state == GameState.player_found:
-            self.update_npc_chasing(dt)
-            return False
-        if self.state == GameState.dialog:
-            self.update_dialog()
-            return False
+            return self.handle_state__player_found(dt)
         if self.state == GameState.menu:
-            self.update_menu()
-            return False
+            return self.handle_state__menu()
+        if self.state == GameState.dialog:
+            return self.handle_state__dialog()
         if self.state == GameState.battle:
-            return False
+            return self.handle_state__battle()
         if self.state == GameState.overworld:
-            self.update_overworld(dt)
+            return self.handle_state__overworld(dt)
+        return False
+
+    def handle_state__player_found(self: Self, dt: float) -> bool:
+        # XXX:
+        # somehow persist cross executions:
+        # npc 1 trigger, npc 1 chase, npc 1 dialog
+        # npc 2 trigger, npc 2 chase, npc 2 dialog
+        # duo battle
+        # on dialog run, go to last state
+        start_lancers = [
+            lancer
+            for lancer in self.lancer
+            if lancer.lancer_state in (LancerState.trigger, LancerState.chase)
+        ]
+        battle_lancers = [lancer for lancer in self.lancer if lancer.lancer_state == LancerState.battle_start]
+        if start_lancers:
+            for lancer in start_lancers:
+                _ = lancer.update(dt)
+                break
+            return True
+        if battle_lancers:
+            for lancer in battle_lancers:
+                _ = lancer.update(dt)
+                self.dialog.set_text(f"hello from {lancer.id}")
+                self.dialog.run()
+                lancer.lancer_state = LancerState.idle
+            self.show_battle()
         return True
 
-    def update_npc_chasing(self: Self, dt: float) -> None:
-        for npc in self.npc:
-            if npc.lancer_state != LancerState.chase:
-                continue
-            _ = npc.update(dt)
-            break
-
-    def update_dialog(self: Self) -> None:
-        self.dialog.run()
-        self.state = GameState.overworld
-
-    def update_menu(self: Self) -> None:
+    def handle_state__menu(self: Self) -> bool:
         self.menu.run()
         self.state = GameState.overworld
+        return True
 
-    def update_overworld(self: Self, dt: float) -> None:
-        for npc in self.npc:
-            _ = npc.update(dt)
+    def handle_state__dialog(self: Self) -> bool:
+        self.dialog.run()
+        self.state = GameState.overworld
+        return True
+
+    def handle_state__battle(self: Self) -> bool:
+        self.battle.run()
+        self.state = GameState.overworld
+        return True
+
+    def handle_state__overworld(self: Self, dt: float) -> bool:
+        for lancer in self.lancer:
+            _ = lancer.update(dt)
         _ = self.player.update(dt)
         if self.map_data.is_warp(self.player.position):
             if self._map_name == MAP1_NAME:
                 self.load_map(MAP2_NAME)
             elif self._map_name == MAP2_NAME:
                 self.load_map(MAP1_NAME)
+        return True
 
     @override
     def draw(self: Self) -> None:
@@ -204,8 +231,8 @@ class Game(Window):
         _ = surface.fill(BLACK)
         self.draw_map(surface)
         self.draw_grid(surface)
-        self.draw_npc_path(surface)
-        self.draw_npc_line_of_sight(surface)
+        self.draw_lancer_path(surface)
+        self.draw_lancer_line_of_sight(surface)
         self.draw_characters(surface)
         self.draw_viewport(surface)
         pygame.display.flip()
@@ -227,30 +254,30 @@ class Game(Window):
         for y in range(0, rect.height, _TILE_SIZE):
             _ = pygame.draw.line(surface, BLUE, (0, y), (rect.width, y))
 
-    def draw_npc_path(self: Self, surface: pygame.surface.Surface) -> None:
+    def draw_lancer_path(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
-        for npc in self.npc:
-            for position in npc.patrol_path.items:
+        for lancer in self.lancer:
+            for position in lancer.patrol_path.items:
                 x, y = position
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
                 rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
-                if position == npc.patrol_path.next():
-                    _ = pygame.draw.rect(surface, NPC_PATH_NEXT_COLOR, rect)
+                if position == lancer.patrol_path.next():
+                    _ = pygame.draw.rect(surface, LANCER_PATH_NEXT_COLOR, rect)
                 else:
-                    _ = pygame.draw.rect(surface, NPC_PATH_COLOR, rect)
+                    _ = pygame.draw.rect(surface, LANCER_PATH_COLOR, rect)
 
-    def draw_npc_line_of_sight(self: Self, surface: pygame.surface.Surface) -> None:
+    def draw_lancer_line_of_sight(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
-        for npc in self.npc:
-            for position in npc.get_line_of_sight():
+        for lancer in self.lancer:
+            for position in lancer.get_line_of_sight():
                 x, y = position
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
                 rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
-                _ = pygame.draw.rect(surface, NPC_RAYCAST_COLOR, rect, width=1)
+                _ = pygame.draw.rect(surface, LANCER_RAYCAST_COLOR, rect, width=1)
 
     def draw_characters(self: Self, surface: pygame.surface.Surface) -> None:
-        for npc in self.npc:
-            _ = surface.blit(npc.surface, npc.rect)
+        for lancer in self.lancer:
+            _ = surface.blit(lancer.surface, lancer.rect)
         _ = surface.blit(self.player.surface, self.player.rect)
 
     def draw_viewport(self: Self, surface: pygame.surface.Surface) -> None:
@@ -261,27 +288,32 @@ class Game(Window):
         rect.clamp_ip(map_rect)
         _ = self.surface.blit(surface, (0, 0), area=rect)
 
-    def is_walkable(
-        self: Self,
-        position: pygame.typing.Point,
-        collision_type: Literal["player", "npc"],
-    ) -> bool:
-        if collision_type == "player":
-            has_collision = (position == p for npc in self.npc for p in (npc.position, npc.next_position))
-            if any(has_collision):
-                return False
-        if collision_type == "npc" and position in (self.player.position, self.player.next_position):
-            return False
-        return self.map_data.is_walkable(position)
-
-    def get_player_position(self: Self) -> pygame.typing.Point:
-        return self.player.position
-
     def show_menu(self: Self) -> None:
         self.state = GameState.menu
 
     def show_dialog(self: Self) -> None:
         self.state = GameState.dialog
+
+    def show_battle(self: Self) -> None:
+        self.state = GameState.battle
+
+    def is_walkable(
+        self: Self,
+        position: pygame.typing.Point,
+        collision_type: Literal["player", "lancer"],
+    ) -> bool:
+        if collision_type == "player":
+            has_collision = (
+                position == p for lancer in self.lancer for p in (lancer.position, lancer.next_position)
+            )
+            if any(has_collision):
+                return False
+        if collision_type == "lancer" and position in (self.player.position, self.player.next_position):
+            return False
+        return self.map_data.is_walkable(position)
+
+    def get_player_position(self: Self) -> pygame.typing.Point:
+        return self.player.position
 
 
 class Menu(Window):
@@ -306,6 +338,41 @@ class Menu(Window):
 
 
 class Dialog(Window):
+    text: str
+
+    def __init__(
+        self: Self,
+        surface: pygame.surface.Surface,
+        font: pygame.font.Font,
+        text: str = "hello",
+    ) -> None:
+        self.text = text
+        super().__init__(surface, font)
+
+    @override
+    def draw(self: Self) -> None:
+        text = self.font.render(self.text, antialias=True, color=BLACK)
+        size = (self.surface.get_width() - 40, self.surface.get_height() // 4)
+        surface = pygame.surface.Surface(size)
+        _ = surface.fill(WHITE)
+        _ = pygame.draw.rect(surface, BLACK, surface.get_rect(), width=4, border_radius=10)
+        _ = surface.blit(text, (20, 20))
+        rect = surface.get_rect()
+        rect.midbottom = self.surface.get_rect().midbottom
+        rect.move_ip(0, -20)
+        _ = self.surface.blit(surface, rect)
+        pygame.display.flip()
+
+    @override
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
+        if keys[pygame.constants.K_SPACE]:
+            self.quit()
+
+    def set_text(self: Self, text: str) -> None:
+        self.text = text
+
+
+class Battle(Window):
     @override
     def draw(self: Self) -> None:
         rect = self.surface.get_rect()
@@ -322,18 +389,18 @@ class Dialog(Window):
 
 class MapData:
     data: dict[pygame.typing.Point, TileType]
-    npc_positions: list[pygame.typing.Point]
+    lancer_positions: list[pygame.typing.Point]
     player_position: pygame.typing.Point
 
     def __init__(self: Self, map_data: str) -> None:
         self.data = {}
-        self.npc_positions = []
+        self.lancer_positions = []
         for y, row in enumerate(map_data.strip().splitlines()):
             for x, tile in enumerate(map(TileType, row)):
                 if tile in (TileType.EMPTY, TileType.WALL, TileType.WARP):
                     self.data[(x, y)] = TileType(tile)
-                elif tile in (TileType.NPC1, TileType.NPC2):
-                    self.npc_positions.append((x, y))
+                elif tile in (TileType.LANCER1, TileType.LANCER2):
+                    self.lancer_positions.append((x, y))
                 elif tile == TileType.PLAYER:
                     self.player_position = (x, y)
 
@@ -365,7 +432,7 @@ class Character:
     next_position: pygame.typing.Point | None
     next_hitbox_position: pygame.typing.Point | None
     _sprites: dict[Direction, pygame.surface.Surface]
-    _character_type: Literal["player", "npc"] = "npc"
+    _character_type: Literal["player", "lancer"] = "lancer"
 
     movement_state: MovementState
 
@@ -463,8 +530,8 @@ class Character:
 @final
 class Lancer(Character):
     lancer_state: LancerState
-    patrol_path: MovementGenerator[pygame.typing.Point]
     line_of_sight_distance: int
+    patrol_path: MovementGenerator[pygame.typing.Point]
     _normal_sprites: dict[Direction, pygame.surface.Surface]
     _angry_sprites: dict[Direction, pygame.surface.Surface]
     _tired_sprites: dict[Direction, pygame.surface.Surface]
@@ -473,30 +540,30 @@ class Lancer(Character):
         self: Self,
         game: Game,
         position: pygame.typing.Point,
-        path: str,
         line_of_sight_distance: int = 5,
+        path: str = "",
     ) -> None:
         self._normal_sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, NPC_COLOR),
-            Direction.UP: _draw_direction_arrow(Direction.UP, NPC_COLOR),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, NPC_COLOR),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, NPC_COLOR),
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, LANCER_COLOR),
+            Direction.UP: _draw_direction_arrow(Direction.UP, LANCER_COLOR),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, LANCER_COLOR),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, LANCER_COLOR),
         }
         self._angry_sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, NPC_CHASING_COLOR),
-            Direction.UP: _draw_direction_arrow(Direction.UP, NPC_CHASING_COLOR),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, NPC_CHASING_COLOR),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, NPC_CHASING_COLOR),
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, LANCER_CHASING_COLOR),
+            Direction.UP: _draw_direction_arrow(Direction.UP, LANCER_CHASING_COLOR),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, LANCER_CHASING_COLOR),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, LANCER_CHASING_COLOR),
         }
         self._tired_sprites = {
-            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, NPC_DONE_COLOR),
-            Direction.UP: _draw_direction_arrow(Direction.UP, NPC_DONE_COLOR),
-            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, NPC_DONE_COLOR),
-            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, NPC_DONE_COLOR),
+            Direction.DOWN: _draw_direction_arrow(Direction.DOWN, LANCER_DONE_COLOR),
+            Direction.UP: _draw_direction_arrow(Direction.UP, LANCER_DONE_COLOR),
+            Direction.RIGHT: _draw_direction_arrow(Direction.RIGHT, LANCER_DONE_COLOR),
+            Direction.LEFT: _draw_direction_arrow(Direction.LEFT, LANCER_DONE_COLOR),
         }
         self.lancer_state = LancerState.patrol
-        self.load_path(path)
         self.line_of_sight_distance = line_of_sight_distance
+        self.load_path(path)
         super().__init__(game, position, self._normal_sprites)
 
     def load_path(self: Self, path: str) -> None:
@@ -514,15 +581,19 @@ class Lancer(Character):
         if super().update(dt):
             return True
         if self.lancer_state == LancerState.patrol:
-            return self.update_patrol()
+            return self.handle_state__patrol()
+        if self.lancer_state == LancerState.trigger:
+            return self.handle_state__trigger()
         if self.lancer_state == LancerState.chase:
-            return self.update_chase()
+            return self.handle_state__chase()
+        if self.lancer_state == LancerState.battle_start:
+            return self.handle_state__battle_start()
         return False
 
-    def update_patrol(self: Self) -> bool:
+    def handle_state__patrol(self: Self) -> bool:
         if self.game.get_player_position() in self.get_line_of_sight():
             self.game.state = GameState.player_found
-            self.lancer_state = LancerState.chase
+            self.lancer_state = LancerState.trigger
             self._sprites = self._angry_sprites
             return True
         if self.move(next(self.patrol_path)):
@@ -530,17 +601,22 @@ class Lancer(Character):
             return True
         return False
 
-    def update_chase(self: Self) -> bool:
+    def handle_state__trigger(self: Self) -> bool:
+        self.lancer_state = LancerState.chase
+        return True
+
+    def handle_state__chase(self: Self) -> bool:
         # NOTE: use movement generator ?
         player_position = self.game.get_player_position()
         next_position = self.get_next_move(player_position)
         if player_position == next_position:
-            self.game.state = GameState.overworld
-            self.lancer_state = LancerState.idle
-            self.game.show_dialog()
-            self._sprites = self._tired_sprites
+            self.lancer_state = LancerState.battle_start
             return True
         return self.move(next_position)
+
+    def handle_state__battle_start(self: Self) -> bool:
+        self._sprites = self._tired_sprites
+        return True
 
     def get_next_move(self: Self, position: pygame.typing.Point) -> pygame.typing.Point:
         target_x, target_y = position
@@ -654,8 +730,8 @@ class TileType(StrEnum):
     EMPTY = "."
     WALL = "H"
     WARP = "O"
-    NPC1 = "1"
-    NPC2 = "2"
+    LANCER1 = "1"
+    LANCER2 = "2"
     PLAYER = "p"
 
 
@@ -673,9 +749,11 @@ class MovementState(StrEnum):
 
 
 class LancerState(StrEnum):
-    idle = auto()
     patrol = auto()
+    trigger = auto()
     chase = auto()
+    battle_start = auto()
+    idle = auto()
 
 
 def _draw_direction_arrow(direction: Direction, color: pygame.color.Color) -> pygame.surface.Surface:
@@ -753,7 +831,7 @@ H...............................................................................
 HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 """
 
-MAP1_NPC1_PATH = """
+MAP1_LANCER1_PATH = """
 .......................................................................................
 .......................................................................................
 .....................cbavut............................................................
@@ -807,7 +885,7 @@ MAP1_NPC1_PATH = """
 .......................................................................................
 """
 
-MAP1_NPC2_PATH = """
+MAP1_LANCER2_PATH = """
 .......................................................................................
 .......................................................................................
 .......................................................................................
@@ -861,7 +939,7 @@ MAP1_NPC2_PATH = """
 .......................................................................................
 """
 
-MAP1_NPC_PATH = [MAP1_NPC1_PATH, MAP1_NPC2_PATH]
+MAP1_LANCER_PATH = [MAP1_LANCER1_PATH, MAP1_LANCER2_PATH]
 
 
 MAP2_NAME = "map2"
@@ -919,7 +997,7 @@ H...............................................................................
 HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 """
 
-MAP2_NPC_PATH = []
+MAP2_LANCER_PATH = []
 
 
 def main() -> None:
