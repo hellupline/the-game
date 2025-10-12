@@ -14,6 +14,7 @@ from __future__ import annotations
 from enum import StrEnum
 from enum import auto
 from operator import itemgetter
+from typing import ClassVar
 from typing import Literal
 from typing import Self
 from typing import final
@@ -387,6 +388,10 @@ class Battle(Window):
             self.quit()
 
 
+class State:
+    pass
+
+
 class MapData:
     data: dict[pygame.typing.Point, TileType]
     lancer_positions: list[pygame.typing.Point]
@@ -421,6 +426,7 @@ class MapData:
 
 
 class Character:
+    _character_type: ClassVar[Literal["player", "lancer"]] = "lancer"
     id: UUID
     game: Game
     position: pygame.typing.Point
@@ -428,13 +434,11 @@ class Character:
     rect: pygame.rect.FRect
     hitbox: pygame.rect.FRect
     direction: Direction
+    movement_state: MovementState
     movement_type: MovementType
     next_position: pygame.typing.Point | None
     next_hitbox_position: pygame.typing.Point | None
     _sprites: dict[Direction, pygame.surface.Surface]
-    _character_type: Literal["player", "lancer"] = "lancer"
-
-    movement_state: MovementState
 
     def __init__(
         self: Self,
@@ -449,12 +453,15 @@ class Character:
         self.rect = self.surface.get_frect()
         self.hitbox = pygame.rect.FRect((0, 0), TILE_SIZE)
         self.direction = Direction.DOWN
+        self.movement_state = MovementState.idle
         self.movement_type = MovementType.WALKING
         self.next_position = None
         self.next_hitbox_position = None
         self.rect.midbottom = self.hitbox.midbottom
-        self.movement_state = MovementState.idle
         self.set_position(position)
+
+    def __init_subclass__(cls: type[Self], charater_type: Literal["player", "lancer"]) -> None:
+        cls._character_type = charater_type
 
     def set_position(self: Self, position: pygame.typing.Point) -> None:
         self.position = position
@@ -528,7 +535,7 @@ class Character:
 
 
 @final
-class Lancer(Character):
+class Lancer(Character, charater_type="lancer"):
     lancer_state: LancerState
     line_of_sight_distance: int
     patrol_path: MovementGenerator[pygame.typing.Point]
@@ -650,9 +657,7 @@ class Lancer(Character):
 
 
 @final
-class Player(Character):
-    _character_type = "player"
-
+class Player(Character, charater_type="player"):
     def __init__(
         self: Self,
         game: Game,
