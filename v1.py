@@ -1,10 +1,10 @@
 #!/usr/bin/env -S uv run python3
 
 from abc import ABC
-from abc import ABCMeta
 from abc import abstractmethod
 from enum import StrEnum
 from enum import auto
+from itertools import chain
 from operator import itemgetter
 from typing import Any
 from typing import ClassVar
@@ -62,14 +62,14 @@ ANIMATION_SPEED = 4.0
 
 class Window:
     surface: pygame.surface.Surface
-    font: pygame.font.Font | None
+    font: pygame.font.Font
     clock: pygame.time.Clock
     _running: bool
 
     def __init__(
         self: Self,
         surface: pygame.surface.Surface,
-        font: pygame.font.Font | None = None,
+        font: pygame.font.Font,
     ) -> None:
         self.surface = surface
         self.font = font
@@ -119,11 +119,15 @@ class GameWindow(Window):
         self.state_manager = GameStateManager(main_window=self)
 
     @override
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> None:
+        _ = self.state_manager.handle_events(events)
+
+    @override
     def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
         if keys[pygame.constants.K_ESCAPE] or keys[pygame.constants.K_q]:
             self.quit()
             return
-        self.state_manager.handle_keys(keys)
+        _ = self.state_manager.handle_keys(keys)
 
     @override
     def update(self: Self, dt: float) -> bool:
@@ -140,7 +144,7 @@ class GameWindow(Window):
         self.draw_lancer_path(surface, dt)
         self.draw_lancer_line_of_sight(surface, dt)
         self.draw_characters(surface, dt)
-        self.state_manager.draw(surface, dt)
+        _ = self.state_manager.draw(surface, dt)
         viewport_rect = self.surface.get_rect()
         viewport_rect.center = self.state_manager.player.rect.topleft
         viewport_rect.clamp_ip(map_rect)
@@ -190,10 +194,35 @@ class GameWindow(Window):
                 _ = pygame.draw.rect(surface, LANCER_RAYCAST_COLOR, rect, width=1)
 
 
-class GameStateManager:
+class StateManager(ABC):
+    @abstractmethod
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update(self: Self, dt: float) -> bool:
+        """Return false if event processing should stop"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def dispatch(self: Self, dt: float) -> bool:
+        """Return false if event processing should stop"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        """Return false if event processing should stop"""
+        raise NotImplementedError
+
+
+class GameStateManager(StateManager):
     main_window: Window
     state: GameState
-    game_events: list[GameEvent]
+    game_events: list[StateManager]
     map_data: MapData
     lancers: list[Lancer]
     player: Player
@@ -223,10 +252,26 @@ class GameStateManager:
         ]
         self.player = Player(game_state_manager=self, position=self.map_data.player_position)
 
-    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
-        self.handle_keys__player(keys)
+    @override
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
+        return True
 
-    def handle_keys__player(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
+    @override
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        if self.state == GameState.game_event:
+            return self.handle_keys__game_events(keys)
+        if self.state == GameState.overworld:
+            return self.handle_keys__player(keys)
+        return True
+
+    def handle_keys__game_events(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        for item in self.game_events:
+            if not item.handle_keys(keys):
+                self.game_events.remove(item)
+            break
+        return True
+
+    def handle_keys__player(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
         if not self.player.is_moving:
             x, y = self.player.position
             if keys[pygame.constants.K_DOWN]:
@@ -241,7 +286,9 @@ class GameStateManager:
             self.player.movement_type = MovementType.RUNNING
         else:
             self.player.movement_type = MovementType.WALKING
+        return True
 
+    @override
     def update(self: Self, dt: float) -> bool:
         if not self.update__game_events(dt):
             return False
@@ -249,9 +296,9 @@ class GameStateManager:
             return False
         if not self.update__player(dt):
             return False
-        return self.dispatch()
+        return self.dispatch(dt)
 
-    def update__game_events(self: Self, dt: float) -> bool:  # pyright: ignore[reportUnusedParameter]
+    def update__game_events(self: Self, dt: float) -> bool:
         if not self.game_events:
             self.state = GameState.overworld
             return True
@@ -270,11 +317,19 @@ class GameStateManager:
         _ = self.player.update(dt)
         return True
 
-    def dispatch(self: Self) -> bool:
+    @override
+    def dispatch(self: Self, dt: float) -> bool:
+        if self.state == GameState.game_event:
+            return self.dispatch__game_events(dt)
         if self.state == GameState.overworld:
             return self.dispatch__update_lancers_patrol()
-        if self.state == GameState.game_event:
-            return True
+        return True
+
+    def dispatch__game_events(self: Self, dt: float) -> bool:
+        for item in self.game_events:
+            if not item.dispatch(dt):
+                self.game_events.remove(item)
+            break
         return True
 
     def dispatch__update_lancers_patrol(self: Self) -> bool:
@@ -286,23 +341,21 @@ class GameStateManager:
             and self.player.position in lancer.get_line_of_sight()
         ]:
             self.state = GameState.game_event
-            for lancer in triggered:
-                lancer.state = LancerState.triggered
-            self.game_events.extend(AlertSprite(lancer) for lancer in triggered)
-            return False
-        if chasing := [
-            lancer
-            for lancer in self.lancers
-            if not lancer.is_moving
-            and lancer.state == LancerState.triggered
-            and self.player.position in lancer.get_line_of_sight()
-        ]:
-            self.state = GameState.game_event
-            for lancer in chasing:
-                lancer.state = LancerState.chasing
-            player = self.player
-            main_surface = self.main_window.surface  # XXX: using incorrect surface ?
-            self.game_events.extend(AlertDialog(lancer, player, main_surface) for lancer in chasing)
+            self.game_events.extend(
+                chain.from_iterable(
+                    (
+                        AlertSprite(lancer),
+                        AlertChase(lancer, self.player),
+                        AlertDialog(
+                            lancer,
+                            self.player,
+                            self.main_window.surface,
+                            self.main_window.font,
+                        ),
+                    )
+                    for lancer in triggered
+                ),
+            )
             return False
         for lancer in self.lancers:
             if lancer.is_moving:
@@ -313,9 +366,13 @@ class GameStateManager:
                     lancer.patrol_route.advance()
         return True
 
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> None:
-        if self.game_events:
-            _ = self.game_events[0].draw(surface, dt)
+    @override
+    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        for item in self.game_events:
+            if not item.draw(surface, dt):
+                self.game_events.remove(item)
+            break
+        return True
 
     def is_walkable(
         self: Self,
@@ -336,44 +393,15 @@ class GameStateManager:
         return self.map_data.is_walkable(position)
 
 
-class GameEvent(ABC):
-    @abstractmethod
-    def update(self: Self, dt: float) -> bool:
-        """Return false if event processing should stop"""
-        raise NotImplementedError
-
-    @abstractmethod
-    def dispatch(self: Self, dt: float) -> bool:
-        """Return false if event processing should stop"""
-        raise NotImplementedError
-
-    @abstractmethod
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
-        """Return false if event processing should stop"""
-        raise NotImplementedError
-
-
-class TimedGameEvent(GameEvent, metaclass=ABCMeta):
-    _max_time: ClassVar[float]
-    dt: float = 0.0
-
-    def __init_subclass__(cls: type[Self], max_time: float, **kwargs: Any) -> None:  # pyright: ignore[reportAny, reportExplicitAny]  # noqa: ANN401
-        super().__init_subclass__(**kwargs)
-        cls._max_time = max_time
-
-    @override
-    def update(self: Self, dt: float) -> bool:
-        self.dt += dt
-        return not self.dt > ALERT_SPRITE_TIME
-
-
 @final
-class AlertSprite(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
+class AlertSprite(StateManager):
     surface: pygame.surface.Surface
     rect: pygame.rect.FRect
+    dt: float = 0.0
     lancer: Lancer
     _sprites: list[pygame.surface.Surface]
     _sprite_index: float = 0
+    _max_time: ClassVar[float] = ALERT_SPRITE_TIME
 
     def __init__(self: Self, lancer: Lancer) -> None:
         sprites = _draw_alert_mark(RED)
@@ -384,10 +412,19 @@ class AlertSprite(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
         self.rect.midbottom = lancer.rect.midtop
 
     @override
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
+        return True
+
+    @override
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        return True
+
+    @override
     def update(self: Self, dt: float) -> bool:
         self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
         self.surface = self._sprites[int(self._sprite_index)]
-        return super().update(dt)
+        self.dt += dt
+        return self.dt <= ALERT_SPRITE_TIME
 
     @override
     def dispatch(self: Self, dt: float) -> bool:
@@ -400,21 +437,83 @@ class AlertSprite(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
 
 
 @final
-class AlertDialog(GameEvent):
+class AlertChase(StateManager):
+    def __init__(self: Self, lancer: Lancer, player: Player) -> None:
+        self.lancer = lancer
+        self.player = player
+
+    @override
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
+        return True
+
+    @override
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        return True
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def dispatch(self: Self, dt: float) -> bool:
+        next_position = self.get_next_move()
+        if self.player.position == next_position:
+            self.lancer.state = LancerState.done
+            return False
+        return self.lancer.move(next_position)
+
+    @override
+    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        return True
+
+    def get_next_move(self: Self) -> pygame.typing.Point:
+        target_x, target_y = self.player.position
+        x, y = self.lancer.position
+        if target_y < y:  # down
+            return (x, y - 1)
+        if target_y > y:  # up
+            return (x, y + 1)
+        if target_x > x:  # right
+            return (x + 1, y)
+        if target_x < x:  # left
+            return (x - 1, y)
+        msg = "Overlapping positions"
+        raise ValueError(msg)
+
+
+@final
+class AlertDialog(StateManager):
     surface: pygame.surface.Surface
     rect: pygame.rect.FRect
+    font: pygame.font.Font
     lancer: Lancer
     player: Player
 
-    def __init__(self: Self, lancer: Lancer, player: Player, main_surface: pygame.surface.Surface) -> None:
+    def __init__(
+        self: Self,
+        lancer: Lancer,
+        player: Player,
+        main_surface: pygame.surface.Surface,
+        font: pygame.font.Font,
+    ) -> None:
         main_window_rect = main_surface.get_rect()
-        self.rect = pygame.rect.FRect((0, 0), (main_window_rect.width, main_window_rect.height * 0.2))
-        self.surface = pygame.surface.Surface(self.rect.size)
+        rect = pygame.rect.FRect((0, 0), (main_window_rect.width, main_window_rect.height * 0.2))
+        self.surface = pygame.surface.Surface(rect.size)
+        self.rect = rect
+        self.font = font
         self.lancer = lancer
         self.player = player
         self.rect.midbottom = main_window_rect.midbottom
 
     @override
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
+        return True
+
+    @override
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        return not (keys[pygame.constants.K_SPACE] or keys[pygame.constants.K_RETURN])
+
+    @override
     def update(self: Self, dt: float) -> bool:
         return True
 
@@ -424,38 +523,11 @@ class AlertDialog(GameEvent):
 
     @override
     def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
-        _ = surface.blit(self.surface, self.rect)
-        return True
-
-
-@final
-class AlertSprite3(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
-    surface: pygame.surface.Surface
-    rect: pygame.rect.FRect
-    lancer: Lancer
-    _sprites: list[pygame.surface.Surface]
-    _sprite_index: float = 0
-
-    def __init__(self: Self, lancer: Lancer) -> None:
-        sprites = _draw_alert_mark(BLUE)
-        self.surface = sprites[0]
-        self.rect = self.surface.get_frect()
-        self._sprites = sprites
-        self.lancer = lancer
-        self.rect.midbottom = lancer.rect.midtop
-
-    @override
-    def update(self: Self, dt: float) -> bool:
-        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
-        self.surface = self._sprites[int(self._sprite_index)]
-        return super().update(dt)
-
-    @override
-    def dispatch(self: Self, dt: float) -> bool:
-        return True
-
-    @override
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        _ = self.surface.fill(WHITE)
+        text = self.font.render("You have been caught!", antialias=True, color=BLACK)
+        rect = text.get_rect()
+        rect.center = self.surface.get_rect().center
+        _ = self.surface.blit(text, rect)
         _ = surface.blit(self.surface, self.rect)
         return True
 
@@ -677,9 +749,9 @@ class Direction(StrEnum):
 
 
 class MovementType(StrEnum):
-    IDLE = auto()
     WALKING = auto()
     RUNNING = auto()
+    IDLE = auto()
 
     def speed(self: Self) -> float:
         if self == MovementType.WALKING:
@@ -701,16 +773,10 @@ class TileType(StrEnum):
 class GameState(StrEnum):
     overworld = auto()
     game_event = auto()
-    menu = auto()
-    dialog = auto()
-    player_found = auto()
-    battle = auto()
 
 
 class LancerState(StrEnum):
     patrolling = auto()
-    triggered = auto()
-    chasing = auto()
     done = auto()
 
 
