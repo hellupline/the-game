@@ -1,5 +1,8 @@
 #!/usr/bin/env -S uv run python3
 
+from abc import ABC
+from abc import ABCMeta
+from abc import abstractmethod
 from enum import StrEnum
 from enum import auto
 from operator import itemgetter
@@ -129,8 +132,8 @@ class GameWindow(Window):
     @override
     def draw(self: Self, dt: float) -> None:
         width, height = self.state_manager.map_data.get_size()
-        map_size = (width * _TILE_SIZE, height * _TILE_SIZE)
-        surface = pygame.surface.Surface(map_size)
+        map_rect = pygame.rect.FRect((0, 0), (width * _TILE_SIZE, height * _TILE_SIZE))
+        surface = pygame.surface.Surface(map_rect.size)
         _ = surface.fill(BLACK)
         self.draw_map(surface, dt)
         self.draw_grid(surface, dt)
@@ -138,7 +141,6 @@ class GameWindow(Window):
         self.draw_lancer_line_of_sight(surface, dt)
         self.draw_characters(surface, dt)
         self.state_manager.draw(surface, dt)
-        map_rect = pygame.rect.FRect((0, 0), map_size)
         viewport_rect = self.surface.get_rect()
         viewport_rect.center = self.state_manager.player.rect.topleft
         viewport_rect.clamp_ip(map_rect)
@@ -186,73 +188,6 @@ class GameWindow(Window):
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
                 rect = pygame.rect.FRect(pos, TILE_SIZE).inflate(inflate, inflate)
                 _ = pygame.draw.rect(surface, LANCER_RAYCAST_COLOR, rect, width=1)
-
-
-class GameEvent:
-    surface: pygame.surface.Surface
-    rect: pygame.rect.FRect
-
-    def __init__(self: Self, surface: pygame.surface.Surface) -> None:
-        self.surface = surface
-        self.rect = self.surface.get_frect()
-
-    def update(self: Self, dt: float) -> bool:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
-        """Return false if complete"""
-        return True
-
-
-class TimedGameEvent(GameEvent):
-    _max_time: ClassVar[float]
-    dt: float = 0.0
-
-    def __init_subclass__(cls: type[Self], max_time: float, **kwargs: Any) -> None:  # pyright: ignore[reportAny, reportExplicitAny]  # noqa: ANN401
-        super().__init_subclass__(**kwargs)
-        cls._max_time = max_time
-
-    @override
-    def update(self: Self, dt: float) -> bool:
-        self.dt += dt
-        return not self.dt > ALERT_SPRITE_TIME
-
-
-@final
-class AlertSprite(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
-    _sprites: list[pygame.surface.Surface]
-    _sprite_index: float = 0
-    lancer: Lancer
-
-    def __init__(self: Self, lancer: Lancer) -> None:
-        sprites = _draw_alert_mark(RED)
-        super().__init__(sprites[0])
-        self._sprites = sprites
-        self.lancer = lancer
-        self.rect.midbottom = lancer.rect.midtop
-
-    @override
-    def update(self: Self, dt: float) -> bool:
-        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
-        self.surface = self._sprites[int(self._sprite_index)]
-        return super().update(dt)
-
-
-@final
-class AlertSprite2(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
-    _sprites: list[pygame.surface.Surface]
-    _sprite_index: float = 0
-    lancer: Lancer
-
-    def __init__(self: Self, lancer: Lancer) -> None:
-        sprites = _draw_alert_mark(GREEN)
-        super().__init__(sprites[0])
-        self._sprites = sprites
-        self.lancer = lancer
-        self.rect.midbottom = lancer.rect.midtop
-
-    @override
-    def update(self: Self, dt: float) -> bool:
-        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
-        self.surface = self._sprites[int(self._sprite_index)]
-        return super().update(dt)
 
 
 class GameStateManager:
@@ -308,11 +243,23 @@ class GameStateManager:
             self.player.movement_type = MovementType.WALKING
 
     def update(self: Self, dt: float) -> bool:
+        if not self.update__game_events(dt):
+            return False
         if not self.update__lancers(dt):
             return False
         if not self.update__player(dt):
             return False
         return self.dispatch()
+
+    def update__game_events(self: Self, dt: float) -> bool:  # pyright: ignore[reportUnusedParameter]
+        if not self.game_events:
+            self.state = GameState.overworld
+            return True
+        for item in self.game_events:
+            if not item.update(dt):
+                self.game_events.remove(item)
+            break
+        return True
 
     def update__lancers(self: Self, dt: float) -> bool:
         for lancer in self.lancers:
@@ -353,7 +300,9 @@ class GameStateManager:
             self.state = GameState.game_event
             for lancer in chasing:
                 lancer.state = LancerState.chasing
-            self.game_events.extend(AlertSprite2(lancer) for lancer in chasing)
+            player = self.player
+            main_surface = self.main_window.surface  # XXX: using incorrect surface ?
+            self.game_events.extend(AlertDialog(lancer, player, main_surface) for lancer in chasing)
             return False
         for lancer in self.lancers:
             if lancer.is_moving:
@@ -366,13 +315,7 @@ class GameStateManager:
 
     def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> None:
         if self.game_events:
-            item = self.game_events[0]
-            if item.update(dt):
-                _ = surface.blit(item.surface, item.rect)
-            else:
-                self.game_events.remove(item)
-        else:
-            self.state = GameState.overworld
+            _ = self.game_events[0].draw(surface, dt)
 
     def is_walkable(
         self: Self,
@@ -391,6 +334,130 @@ class GameStateManager:
         if collision_type == "lancer" and position in (self.player.position, self.player.next_position):
             return False
         return self.map_data.is_walkable(position)
+
+
+class GameEvent(ABC):
+    @abstractmethod
+    def update(self: Self, dt: float) -> bool:
+        """Return false if event processing should stop"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def dispatch(self: Self, dt: float) -> bool:
+        """Return false if event processing should stop"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        """Return false if event processing should stop"""
+        raise NotImplementedError
+
+
+class TimedGameEvent(GameEvent, metaclass=ABCMeta):
+    _max_time: ClassVar[float]
+    dt: float = 0.0
+
+    def __init_subclass__(cls: type[Self], max_time: float, **kwargs: Any) -> None:  # pyright: ignore[reportAny, reportExplicitAny]  # noqa: ANN401
+        super().__init_subclass__(**kwargs)
+        cls._max_time = max_time
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        self.dt += dt
+        return not self.dt > ALERT_SPRITE_TIME
+
+
+@final
+class AlertSprite(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
+    surface: pygame.surface.Surface
+    rect: pygame.rect.FRect
+    lancer: Lancer
+    _sprites: list[pygame.surface.Surface]
+    _sprite_index: float = 0
+
+    def __init__(self: Self, lancer: Lancer) -> None:
+        sprites = _draw_alert_mark(RED)
+        self.surface = sprites[0]
+        self.rect = self.surface.get_frect()
+        self._sprites = sprites
+        self.lancer = lancer
+        self.rect.midbottom = lancer.rect.midtop
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
+        self.surface = self._sprites[int(self._sprite_index)]
+        return super().update(dt)
+
+    @override
+    def dispatch(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        _ = surface.blit(self.surface, self.rect)
+        return True
+
+
+@final
+class AlertDialog(GameEvent):
+    surface: pygame.surface.Surface
+    rect: pygame.rect.FRect
+    lancer: Lancer
+    player: Player
+
+    def __init__(self: Self, lancer: Lancer, player: Player, main_surface: pygame.surface.Surface) -> None:
+        main_window_rect = main_surface.get_rect()
+        self.rect = pygame.rect.FRect((0, 0), (main_window_rect.width, main_window_rect.height * 0.2))
+        self.surface = pygame.surface.Surface(self.rect.size)
+        self.lancer = lancer
+        self.player = player
+        self.rect.midbottom = main_window_rect.midbottom
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def dispatch(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        _ = surface.blit(self.surface, self.rect)
+        return True
+
+
+@final
+class AlertSprite3(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
+    surface: pygame.surface.Surface
+    rect: pygame.rect.FRect
+    lancer: Lancer
+    _sprites: list[pygame.surface.Surface]
+    _sprite_index: float = 0
+
+    def __init__(self: Self, lancer: Lancer) -> None:
+        sprites = _draw_alert_mark(BLUE)
+        self.surface = sprites[0]
+        self.rect = self.surface.get_frect()
+        self._sprites = sprites
+        self.lancer = lancer
+        self.rect.midbottom = lancer.rect.midtop
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
+        self.surface = self._sprites[int(self._sprite_index)]
+        return super().update(dt)
+
+    @override
+    def dispatch(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        _ = surface.blit(self.surface, self.rect)
+        return True
 
 
 class MapData:
