@@ -7,6 +7,7 @@ from typing import Any
 from typing import ClassVar
 from typing import Literal
 from typing import Self
+from typing import final
 from typing import override
 from uuid import UUID
 from uuid import uuid4
@@ -48,11 +49,12 @@ LANCER_DONE_COLOR = GREY
 LANCER_ROUTE_COLOR = CYAN
 LANCER_ROUTE_NEXT_COLOR = YELLOW
 LANCER_RAYCAST_COLOR = MAGENTA
-COLORKEY = BLUE
+COLORKEY = pygame.color.Color(255, 0, 255)
 
 WALKING_SPEED = 200
 RUNNING_SPEED = 500
 ALERT_SPRITE_TIME = 0.6
+ANIMATION_SPEED = 4.0
 
 
 class Window:
@@ -213,13 +215,44 @@ class TimedGameEvent(GameEvent):
         return not self.dt > ALERT_SPRITE_TIME
 
 
+@final
 class AlertSprite(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
+    _sprites: list[pygame.surface.Surface]
+    _sprite_index: float = 0
     lancer: Lancer
 
     def __init__(self: Self, lancer: Lancer) -> None:
-        super().__init__(_draw_exclamation_mark(RED))
+        sprites = _draw_alert_mark(RED)
+        super().__init__(sprites[0])
+        self._sprites = sprites
         self.lancer = lancer
         self.rect.midbottom = lancer.rect.midtop
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
+        self.surface = self._sprites[int(self._sprite_index)]
+        return super().update(dt)
+
+
+@final
+class AlertSprite2(TimedGameEvent, max_time=ALERT_SPRITE_TIME):
+    _sprites: list[pygame.surface.Surface]
+    _sprite_index: float = 0
+    lancer: Lancer
+
+    def __init__(self: Self, lancer: Lancer) -> None:
+        sprites = _draw_alert_mark(GREEN)
+        super().__init__(sprites[0])
+        self._sprites = sprites
+        self.lancer = lancer
+        self.rect.midbottom = lancer.rect.midtop
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
+        self.surface = self._sprites[int(self._sprite_index)]
+        return super().update(dt)
 
 
 class GameStateManager:
@@ -298,21 +331,37 @@ class GameStateManager:
         return True
 
     def dispatch__update_lancers_patrol(self: Self) -> bool:
-        battle_start = [
+        if triggered := [
             lancer
             for lancer in self.lancers
-            if not lancer.is_moving and self.player.position in lancer.get_line_of_sight()
-        ]
-        if battle_start:
+            if not lancer.is_moving
+            and lancer.state == LancerState.patrolling
+            and self.player.position in lancer.get_line_of_sight()
+        ]:
             self.state = GameState.game_event
-            self.game_events.extend(AlertSprite(lancer) for lancer in battle_start)
+            for lancer in triggered:
+                lancer.state = LancerState.triggered
+            self.game_events.extend(AlertSprite(lancer) for lancer in triggered)
+            return False
+        if chasing := [
+            lancer
+            for lancer in self.lancers
+            if not lancer.is_moving
+            and lancer.state == LancerState.triggered
+            and self.player.position in lancer.get_line_of_sight()
+        ]:
+            self.state = GameState.game_event
+            for lancer in chasing:
+                lancer.state = LancerState.chasing
+            self.game_events.extend(AlertSprite2(lancer) for lancer in chasing)
             return False
         for lancer in self.lancers:
             if lancer.is_moving:
                 continue
-            next_position = next(lancer.patrol_route)
-            if lancer.move(next_position):
-                lancer.patrol_route.advance()
+            if lancer.state == LancerState.patrolling:
+                next_position = next(lancer.patrol_route)
+                if lancer.move(next_position):
+                    lancer.patrol_route.advance()
         return True
 
     def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> None:
@@ -491,6 +540,7 @@ class Character:
 
 
 class Lancer(Character, charater_type="lancer"):
+    state: LancerState
     patrol_route: MovementGenerator[pygame.typing.Point]
     line_of_sight_distance: int
 
@@ -502,6 +552,7 @@ class Lancer(Character, charater_type="lancer"):
         line_of_sight_distance: int = 5,
     ) -> None:
         super().__init__(game_state_manager, position, get_character_surface(LANCER_COLOR))
+        self.state = LancerState.patrolling
         self.patrol_route = MovementGenerator(route)
         self.line_of_sight_distance = line_of_sight_distance
 
@@ -589,11 +640,11 @@ class GameState(StrEnum):
     battle = auto()
 
 
-class T:
-    running: bool = True
-
-    def handle(self: Self) -> bool:
-        return True
+class LancerState(StrEnum):
+    patrolling = auto()
+    triggered = auto()
+    chasing = auto()
+    done = auto()
 
 
 def get_character_surface(
@@ -622,14 +673,26 @@ def _draw_direction_arrow(direction: Direction, color: pygame.color.Color) -> py
     return surface
 
 
-def _draw_exclamation_mark(color: pygame.color.Color) -> pygame.surface.Surface:
-    rect = pygame.rect.FRect((0, 0), TILE_SIZE)
-    points = [rect.midtop, rect.midright, rect.midbottom, rect.midleft]
-    surface = pygame.surface.Surface(rect.size)
-    surface.set_colorkey(COLORKEY)
-    _ = surface.fill(COLORKEY)
-    _ = pygame.draw.polygon(surface, color, points)
-    return surface
+def _draw_alert_mark(color: pygame.color.Color) -> list[pygame.surface.Surface]:
+    polygon_rect = pygame.rect.FRect((0, 0), TILE_SIZE)
+    points_1 = [polygon_rect.midtop, polygon_rect.midright, polygon_rect.midbottom, polygon_rect.midleft]
+    polygon_rect.inflate_ip(-_TILE_SIZE * 0.5, 0)
+    points_2 = [polygon_rect.midtop, polygon_rect.midright, polygon_rect.midbottom, polygon_rect.midleft]
+    polygon_rect.inflate_ip(-_TILE_SIZE * 0.5, 0)
+    points_3 = [polygon_rect.midtop, polygon_rect.midright, polygon_rect.midbottom, polygon_rect.midleft]
+    surface_rect = pygame.rect.FRect((0, 0), TILE_SIZE)
+    surface_1 = pygame.surface.Surface(surface_rect.size)
+    surface_2 = pygame.surface.Surface(surface_rect.size)
+    surface_3 = pygame.surface.Surface(surface_rect.size)
+    for surface, points in zip(
+        [surface_1, surface_2, surface_3],
+        [points_1, points_2, points_3],
+        strict=False,
+    ):
+        surface.set_colorkey(COLORKEY)
+        _ = surface.fill(COLORKEY)
+        _ = pygame.draw.polygon(surface, color, points)
+    return [surface_1, surface_2, surface_3]
 
 
 def main() -> None:
