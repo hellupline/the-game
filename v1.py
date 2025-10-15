@@ -1,7 +1,5 @@
 #!/usr/bin/env -S uv run python3
 
-from __future__ import annotations
-
 from enum import StrEnum
 from enum import auto
 from operator import itemgetter
