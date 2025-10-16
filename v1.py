@@ -1,18 +1,17 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
-# - add pause menu
 # - ysort render
 # - multi layer render
-# - combine npc battles into one single battle
 # - npcs can walk in a area (not just a path)
 # - non combat npcs
 # - interaction with npcs
 # - multi height map
-# - update get_pressed to use events
+# - battle screen
+# - combine npc battles into one single battle
+# - update get_pressed to use events ?
 # - separate window from game logic
 # - optimize drawing (only redraw changed parts)
-# - delegate more actions to main game loop ?
 
 from abc import ABC
 from abc import abstractmethod
@@ -281,6 +280,10 @@ class GameStateManager(StateManager):
         if self.state == GameState.game_event:
             return self.handle_keys__game_events(keys)
         if self.state == GameState.overworld:
+            if keys[pygame.constants.K_RETURN] and not self.player.is_moving:
+                self.game_events.append(PauseMenu(self.main_window.font))
+                self.state = GameState.game_event
+                return False
             return self.handle_keys__player(keys)
         return True
 
@@ -367,12 +370,7 @@ class GameStateManager(StateManager):
                     (
                         AlertSprite(lancer),
                         AlertChase(lancer, self.player),
-                        AlertDialog(
-                            lancer,
-                            self.player,
-                            self.main_window.surface,
-                            self.main_window.font,
-                        ),
+                        AlertDialog("You have been caught!", self.main_window.font),
                     )
                     for lancer in triggered
                 ),
@@ -420,6 +418,60 @@ class GameStateManager(StateManager):
         if collision_type == "lancer" and position in (self.player.position, self.player.next_position):
             return False
         return self.map_data.is_walkable(position)
+
+
+@final
+class PauseMenu(StateManager):
+    surface: pygame.surface.Surface
+    rect: pygame.rect.FRect
+    font: pygame.font.Font
+
+    def __init__(self: Self, font: pygame.font.Font) -> None:
+        main_window_rect = pygame.rect.FRect((0, 0), WINDOW_SIZE)
+        rect = pygame.rect.FRect((0, 0), (main_window_rect.width * 0.2, main_window_rect.height * 0.8))
+        self.surface = pygame.surface.Surface(rect.size)
+        self.rect = rect
+        self.font = font
+        self.rect.midright = main_window_rect.midright
+        self.rect.move_ip(-20, 0)
+        self.render()
+
+    def render(self: Self) -> None:
+        _ = self.surface.fill(WHITE)
+        text_surface = self.font.render("menu", antialias=True, color=BLACK)
+        text_rect = text_surface.get_rect()
+        text_rect.center = self.surface.get_rect().center
+        _ = self.surface.blit(text_surface, text_rect)
+
+    @override
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
+        return True
+
+    @override
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        return not keys[pygame.constants.K_SPACE]
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def dispatch(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        return True
+
+    @override
+    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        _ = self.surface.fill(WHITE)
+        text = self.font.render("menu", antialias=True, color=BLACK)
+        rect = text.get_rect()
+        rect.center = self.surface.get_rect().center
+        _ = self.surface.blit(text, rect)
+        _ = surface.blit(self.surface, self.rect)
+        return True
 
 
 @final
@@ -520,27 +572,27 @@ class AlertChase(StateManager):
 
 @final
 class AlertDialog(StateManager):
+    text: str
     surface: pygame.surface.Surface
     rect: pygame.rect.FRect
     font: pygame.font.Font
-    lancer: Lancer
-    player: Player
 
-    def __init__(
-        self: Self,
-        lancer: Lancer,
-        player: Player,
-        main_surface: pygame.surface.Surface,
-        font: pygame.font.Font,
-    ) -> None:
-        main_window_rect = main_surface.get_rect()
+    def __init__(self: Self, text: str, font: pygame.font.Font) -> None:
+        self.text = text
+        main_window_rect = pygame.rect.FRect((0, 0), WINDOW_SIZE)
         rect = pygame.rect.FRect((0, 0), (main_window_rect.width * 0.8, main_window_rect.height * 0.2))
         self.surface = pygame.surface.Surface(rect.size)
         self.rect = rect
         self.font = font
-        self.lancer = lancer
-        self.player = player
         self.rect.midbottom = main_window_rect.midbottom
+        self.render()
+
+    def render(self: Self) -> None:
+        _ = self.surface.fill(WHITE)
+        text_surface = self.font.render(self.text, antialias=True, color=BLACK)
+        text_rect = text_surface.get_rect()
+        text_rect.center = self.surface.get_rect().center
+        _ = self.surface.blit(text_surface, text_rect)
 
     @override
     def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
@@ -564,11 +616,6 @@ class AlertDialog(StateManager):
 
     @override
     def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
-        _ = self.surface.fill(WHITE)
-        text = self.font.render("You have been caught!", antialias=True, color=BLACK)
-        rect = text.get_rect()
-        rect.center = self.surface.get_rect().center
-        _ = self.surface.blit(text, rect)
         _ = surface.blit(self.surface, self.rect)
         return True
 
