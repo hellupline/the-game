@@ -7,7 +7,6 @@
 # - non combat npcs
 # - interaction with npcs
 # - multi height map
-# - battle screen
 # - combine npc battles into one single battle
 # - update get_pressed to use events ?
 # - separate window from game logic
@@ -366,13 +365,16 @@ class GameStateManager(StateManager):
         ]:
             self.state = GameState.game_event
             self.game_events.extend(
-                chain.from_iterable(
-                    (
-                        AlertSprite(lancer),
-                        AlertChase(lancer, self.player),
-                        AlertDialog("You have been caught!", self.main_window.font),
-                    )
-                    for lancer in triggered
+                chain(
+                    chain.from_iterable(
+                        (
+                            AlertSprite(lancer),
+                            AlertChase(lancer, self.player),
+                            AlertDialog("You have been caught!", self.main_window.font),
+                        )
+                        for lancer in triggered
+                    ),
+                    [Battle(self.main_window.font, triggered)],
                 ),
             )
             return False
@@ -601,6 +603,57 @@ class AlertDialog(StateManager):
     @override
     def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
         return not (keys[pygame.constants.K_SPACE] or keys[pygame.constants.K_RETURN])
+
+    @override
+    def update(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def dispatch(self: Self, dt: float) -> bool:
+        return True
+
+    @override
+    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        return True
+
+    @override
+    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        _ = surface.blit(self.surface, self.rect)
+        return True
+
+
+@final
+class Battle(StateManager):
+    surface: pygame.surface.Surface
+    rect: pygame.rect.FRect
+    font: pygame.font.Font
+    lancers: list[Lancer]
+
+    def __init__(self: Self, font: pygame.font.Font, lancers: list[Lancer]) -> None:
+        main_window_rect = pygame.rect.FRect((0, 0), WINDOW_SIZE)
+        rect = pygame.rect.FRect((0, 0), (main_window_rect.width * 0.9, main_window_rect.height * 0.9))
+        self.surface = pygame.surface.Surface(rect.size)
+        self.rect = rect
+        self.font = font
+        self.rect.center = main_window_rect.center
+        self.lancers = lancers
+        self.render()
+
+    def render(self: Self) -> None:
+        _ = self.surface.fill(WHITE)
+        lancer_ids = "\n".join(str(lancer.id) for lancer in self.lancers)
+        text_surface = self.font.render(f"battle:\n{lancer_ids}", antialias=True, color=BLACK)
+        text_rect = text_surface.get_rect()
+        text_rect.center = self.surface.get_rect().center
+        _ = self.surface.blit(text_surface, text_rect)
+
+    @override
+    def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
+        return True
+
+    @override
+    def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
+        return not keys[pygame.constants.K_TAB]
 
     @override
     def update(self: Self, dt: float) -> bool:
