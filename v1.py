@@ -1,5 +1,19 @@
 #!/usr/bin/env -S uv run python3
 
+# TODO:
+# - add pause menu
+# - ysort render
+# - multi layer render
+# - combine npc battles into one single battle
+# - npcs can walk in a area (not just a path)
+# - non combat npcs
+# - interaction with npcs
+# - multi height map
+# - update get_pressed to use events
+# - separate window from game logic
+# - optimize drawing (only redraw changed parts)
+# - delegate more actions to main game loop ?
+
 from abc import ABC
 from abc import abstractmethod
 from enum import StrEnum
