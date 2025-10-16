@@ -137,18 +137,19 @@ class GameWindow(Window):
     def draw(self: Self, dt: float) -> None:
         width, height = self.state_manager.map_data.get_size()
         map_rect = pygame.rect.FRect((0, 0), (width * _TILE_SIZE, height * _TILE_SIZE))
-        surface = pygame.surface.Surface(map_rect.size)
-        _ = surface.fill(BLACK)
-        self.draw_map(surface, dt)
-        self.draw_grid(surface, dt)
-        self.draw_lancer_path(surface, dt)
-        self.draw_lancer_line_of_sight(surface, dt)
-        self.draw_characters(surface, dt)
-        _ = self.state_manager.draw(surface, dt)
+        map_surface = pygame.surface.Surface(map_rect.size)
+        _ = map_surface.fill(BLACK)
+        self.draw_map(map_surface, dt)
+        self.draw_grid(map_surface, dt)
+        self.draw_lancer_path(map_surface, dt)
+        self.draw_lancer_line_of_sight(map_surface, dt)
+        self.draw_characters(map_surface, dt)
+        _ = self.state_manager.draw_on_map(map_surface, dt)
         viewport_rect = self.surface.get_rect()
         viewport_rect.center = self.state_manager.player.rect.topleft
         viewport_rect.clamp_ip(map_rect)
-        _ = self.surface.blit(surface, area=viewport_rect)
+        _ = self.surface.blit(map_surface, area=viewport_rect)
+        _ = self.state_manager.draw_on_window(self.surface, dt)
 
     def draw_map(self: Self, surface: pygame.surface.Surface, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
         for (x, y), tile in self.state_manager.map_data.data.items():
@@ -214,7 +215,12 @@ class StateManager(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        """Return false if event processing should stop"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
         """Return false if event processing should stop"""
         raise NotImplementedError
 
@@ -333,6 +339,7 @@ class GameStateManager(StateManager):
         return True
 
     def dispatch__update_lancers_patrol(self: Self) -> bool:
+        # XXX: only test player new position, or block player from moving before lancer move
         if triggered := [
             lancer
             for lancer in self.lancers
@@ -367,9 +374,17 @@ class GameStateManager(StateManager):
         return True
 
     @override
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
         for item in self.game_events:
-            if not item.draw(surface, dt):
+            if not item.draw_on_map(surface, dt):
+                self.game_events.remove(item)
+            break
+        return True
+
+    @override
+    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        for item in self.game_events:
+            if not item.draw_on_window(surface, dt):
                 self.game_events.remove(item)
             break
         return True
@@ -431,8 +446,12 @@ class AlertSprite(StateManager):
         return True
 
     @override
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
         _ = surface.blit(self.surface, self.rect)
+        return True
+
+    @override
+    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
         return True
 
 
@@ -463,7 +482,11 @@ class AlertChase(StateManager):
         return self.lancer.move(next_position)
 
     @override
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        return True
+
+    @override
+    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
         return True
 
     def get_next_move(self: Self) -> pygame.typing.Point:
@@ -497,7 +520,7 @@ class AlertDialog(StateManager):
         font: pygame.font.Font,
     ) -> None:
         main_window_rect = main_surface.get_rect()
-        rect = pygame.rect.FRect((0, 0), (main_window_rect.width, main_window_rect.height * 0.2))
+        rect = pygame.rect.FRect((0, 0), (main_window_rect.width * 0.8, main_window_rect.height * 0.2))
         self.surface = pygame.surface.Surface(rect.size)
         self.rect = rect
         self.font = font
@@ -522,7 +545,11 @@ class AlertDialog(StateManager):
         return True
 
     @override
-    def draw(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+        return True
+
+    @override
+    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
         _ = self.surface.fill(WHITE)
         text = self.font.render("You have been caught!", antialias=True, color=BLACK)
         rect = text.get_rect()
@@ -837,7 +864,7 @@ MAP1_NAME = "map1"
 MAP1_DATA = """
 HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 H.....................................................................................H
-H.HHHHH.....HHHHH......1........................................H.....H...............H
+H.HHHHH.....HHHHH......2........................................H.....H...............H
 H.H.............H...............................................H.....H...............H
 H.H.............H...............................................H.....H...............H
 H.H.............H...............................................H.....H...............H
@@ -851,7 +878,7 @@ H.H...HHHHHHH...H...........................................HHHHH.....HHHHH.....
 H.H.............H...............................................H.....H...............H
 H.H.............H...............................................H.....H...............H
 H.H.............H...............................................H.....H...............H
-H.HHHHH.....HHHHH......2........................................H.....H...............H
+H.HHHHH.....HHHHH......1........................................H.....H...............H
 H.....................................................................................H
 H.....................................................................................H
 H.....................................................................................H
