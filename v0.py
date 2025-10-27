@@ -19,6 +19,7 @@ from enum import StrEnum
 from enum import auto
 from itertools import chain
 from operator import itemgetter
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import ClassVar
@@ -43,6 +44,8 @@ import pygame.typing
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+type SpriteSheet = dict[Direction, dict[MovementSpeed, pygame.surface.Surface]]
 
 BLACK = pygame.color.Color(64, 64, 64)
 GREY = pygame.color.Color(128, 128, 128)
@@ -71,10 +74,10 @@ LANCER_ROUTE_NEXT_COLOR = YELLOW
 LANCER_RAYCAST_COLOR = MAGENTA
 COLORKEY = pygame.color.Color(255, 0, 255)
 
-WALKING_SPEED = 200
-RUNNING_SPEED = 500
-ALERT_SPRITE_TIME = 0.6
-ANIMATION_SPEED = 4.0
+WALKING_SPEED = 2
+RUNNING_SPEED = 6
+ALERT_SPRITE_TIME = 50
+ANIMATION_SPEED = 0.05
 
 
 class GameWindow:
@@ -94,59 +97,57 @@ class GameWindow:
         self._running = False
 
     def run(self: Self) -> None:
-        dt = 0
         self._running = True
         while self._running:
-            self.run_once(0.001)
+            self.run_once()
             pygame.display.flip()
-            dt = self.clock.tick(FPS) / 1000
+            _ = self.clock.tick(FPS) / 1000
 
-    def run_once(self: Self, dt: float) -> None:
-        events = pygame.event.get()
-        keys = pygame.key.get_pressed()
-        self.dispatch(dt)
-        self.handle_events(events)
-        self.handle_keys(keys)
-        self.update(dt)
-        self.draw(dt)
+    def run_once(self: Self) -> None:
+        self.dispatch()
+        self.handle_events(pygame.event.get())
+        self.handle_keys(pygame.key.get_pressed())
+        self.update()
+        self.draw()
         self.cleanup()
-        _debug(repr(self.game_state._updating))
 
-    def dispatch(self: Self, dt: float) -> None:
-        _ = self.game_state.dispatch(dt)
+    def dispatch(self: Self) -> None:
+        _ = self.game_state.dispatch()
 
     def handle_events(self: Self, events: list[pygame.event.Event]) -> None:
         for event in events:
             if event.type == pygame.constants.QUIT:
                 self.quit()
                 return
+            if event.type == pygame.constants.KEYDOWN:
+                quit_keys = (pygame.constants.K_ESCAPE, pygame.constants.K_q)
+                if event.key in quit_keys:  # pyright: ignore[reportAny]
+                    self.quit()
+                    return
         _ = self.game_state.handle_events(events)
 
     def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
-        if keys[pygame.constants.K_ESCAPE] or keys[pygame.constants.K_q]:
-            self.quit()
-            return
         _ = self.game_state.handle_keys(keys)
 
-    def update(self: Self, dt: float) -> None:
-        _ = self.game_state.update(dt)
+    def update(self: Self) -> None:
+        _ = self.game_state.update()
 
-    def draw(self: Self, dt: float) -> None:
+    def draw(self: Self) -> None:
         width, height = self.game_state.map_data.get_size()
         map_rect = pygame.rect.FRect((0, 0), (width * _TILE_SIZE, height * _TILE_SIZE))
         map_surface = pygame.surface.Surface(map_rect.size)
         _ = map_surface.fill(BLACK)
-        self.draw_map(map_surface, dt)
-        self.draw_debug(map_surface, dt)
-        self.draw_characters(map_surface, dt)
-        _ = self.game_state.draw_on_map(map_surface, dt)
+        self.draw_map(map_surface)
+        self.draw_debug(map_surface)
+        self.draw_characters(map_surface)
+        _ = self.game_state.draw_on_map(map_surface)
         viewport_rect = self.surface.get_rect()
         viewport_rect.center = self.game_state.player.rect.topleft
         viewport_rect.clamp_ip(map_rect)
         _ = self.surface.blit(map_surface, area=viewport_rect)
-        _ = self.game_state.draw_on_window(self.surface, dt)
+        _ = self.game_state.draw_on_window(self.surface)
 
-    def draw_map(self: Self, surface: pygame.surface.Surface, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+    def draw_map(self: Self, surface: pygame.surface.Surface) -> None:
         for (x, y), tile in self.game_state.map_data.data.items():
             if tile == TileType.WALL:
                 rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
@@ -156,24 +157,24 @@ class GameWindow:
                 _ = pygame.draw.rect(surface, FLOOR_COLOR, rect)
                 _ = pygame.draw.circle(surface, BLUE, rect.center, _TILE_SIZE // 4)
 
-    def draw_characters(self: Self, surface: pygame.surface.Surface, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+    def draw_characters(self: Self, surface: pygame.surface.Surface) -> None:
         characters = [*self.game_state.map_lancers, self.game_state.player]
         for character in sorted(characters, key=lambda c: c.rect.y):
             _ = surface.blit(character.surface, character.rect)
 
-    def draw_debug(self: Self, surface: pygame.surface.Surface, dt: float) -> None:
-        self._draw_grid(surface, dt)
-        self._draw_lancer_path(surface, dt)
-        self._draw_lancer_line_of_sight(surface, dt)
+    def draw_debug(self: Self, surface: pygame.surface.Surface) -> None:
+        self._draw_grid(surface)
+        self._draw_lancer_path(surface)
+        self._draw_lancer_line_of_sight(surface)
 
-    def _draw_grid(self: Self, surface: pygame.surface.Surface, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+    def _draw_grid(self: Self, surface: pygame.surface.Surface) -> None:
         rect = surface.get_rect()
         for x in range(0, rect.width, _TILE_SIZE):
             _ = pygame.draw.line(surface, BLUE, (x, 0), (x, rect.height))
         for y in range(0, rect.height, _TILE_SIZE):
             _ = pygame.draw.line(surface, BLUE, (0, y), (rect.width, y))
 
-    def _draw_lancer_path(self: Self, surface: pygame.surface.Surface, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+    def _draw_lancer_path(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
         for lancer in self.game_state.map_lancers:
             for position in lancer.patrol_route.items:
@@ -185,7 +186,7 @@ class GameWindow:
                 else:
                     _ = pygame.draw.rect(surface, LANCER_ROUTE_COLOR, rect)
 
-    def _draw_lancer_line_of_sight(self: Self, surface: pygame.surface.Surface, dt: float) -> None:  # pyright: ignore[reportUnusedParameter]  # noqa: ARG002
+    def _draw_lancer_line_of_sight(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
         for lancer in self.game_state.map_lancers:
             for position in lancer.get_line_of_sight():
@@ -204,7 +205,7 @@ class StateManager(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def dispatch(self: Self, dt: float) -> bool:
+    def dispatch(self: Self) -> bool:
         """Return false if event processing should stop"""
         raise NotImplementedError
 
@@ -219,17 +220,17 @@ class StateManager(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def update(self: Self, dt: float) -> bool:
+    def update(self: Self) -> bool:
         """Return false if event processing should stop"""
         raise NotImplementedError
 
     @abstractmethod
-    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
         """Return false if event processing should stop"""
         raise NotImplementedError
 
     @abstractmethod
-    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
         """Return false if event processing should stop"""
         raise NotImplementedError
 
@@ -240,30 +241,29 @@ class StateManager(ABC):
 
 
 class GameStateManager(StateManager):
-    main_window: GameWindow
+    window: GameWindow
     state: GameState
-    game_events: list[StateManager]
+    substates: list[StateManager]
     map_data: MapData
     map_lancers: list[Lancer]
     player: Player
     _map_name: str
-    _map_data_cache: dict[str, MapData]
+    _map_cache: dict[MapName, MapData]
     _updating: bool
 
     def __init__(self: Self, main_window: GameWindow) -> None:
-        self.main_window = main_window
+        self.window = main_window
         self.state = GameState.overworld
-        self.game_events = []
-        self._map_data_cache = {
-            MAP1_NAME: MapData(map_data=MAP1_DATA, lancer_routes=MAP1_LANCER_ROUTES),
-            MAP2_NAME: MapData(map_data=MAP2_DATA, lancer_routes=MAP2_LANCER_ROUTES),
-        }
-        self.load_map(MAP1_NAME)
-        self._updating = False
+        self.substates = []
+        self.load_maps()
+        self.set_map(MapName.MAP1)
 
-    def load_map(self: Self, map_name: str) -> None:
-        self._map_name = map_name
-        self.map_data = self._map_data_cache[map_name]
+    def load_maps(self: Self) -> None:
+        self._map_cache = {map_name: map_name.load_map() for map_name in MapName}
+
+    def set_map(self: Self, name: MapName) -> None:
+        self._map_name = name
+        self.map_data = self._map_cache[name]
         self.map_lancers = [
             Lancer(game_state_manager=self, position=position, route=route)
             for position, route in zip(
@@ -279,30 +279,24 @@ class GameStateManager(StateManager):
         return True
 
     @override
-    def dispatch(self: Self, dt: float) -> bool:
+    def dispatch(self: Self) -> bool:
         if self.state == GameState.game_event:
-            if v := self.dispatch__game_events(dt):
-                self._updating = True
-            return v
-        if self._updating:
-            return False
+            return self.dispatch__substates()
         if self.state == GameState.overworld:
-            if v := self.dispatch__update_lancers_patrol():
-                self._updating = True
-            return v
+            return self.dispatch__lancers()
         return True
 
-    def dispatch__game_events(self: Self, dt: float) -> bool:
-        for item in self.game_events:
-            if not item.dispatch(dt):
-                self.game_events.remove(item)
+    def dispatch__substates(self: Self) -> bool:
+        for item in self.substates:
+            if not item.dispatch():
+                self.substates.remove(item)
             break
         return True
 
-    def dispatch__update_lancers_patrol(self: Self) -> bool:
+    def dispatch__lancers(self: Self) -> bool:
         if triggered := self.get_triggered_lancers():
             self.state = GameState.game_event
-            self.game_events.extend(self.make_battle_start(triggered))
+            self.substates.extend(self.make_battle_start(triggered))
             return False
         for lancer in self.map_lancers:
             if lancer.is_moving:
@@ -330,11 +324,11 @@ class GameStateManager(StateManager):
             (
                 AlertSprite(lancer),
                 AlertChase(lancer, self.player),
-                AlertDialog("You have been caught!", self.main_window.font),
+                AlertDialog("You have been caught!", self.window.font),
             )
             for lancer in lancers
         )
-        return [*pre_battle, Battle(self.main_window.font, lancers)]
+        return [*pre_battle, Battle(self.window.font, lancers)]
 
     @override
     def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
@@ -346,16 +340,16 @@ class GameStateManager(StateManager):
             return self.handle_keys__game_events(keys)
         if self.state == GameState.overworld:
             if keys[pygame.constants.K_RETURN] and not self.player.is_moving:
-                self.game_events.append(PauseMenu(self.main_window.font))
                 self.state = GameState.game_event
+                self.substates.append(PauseMenu(self.window.font))
                 return False
             return self.handle_keys__player(keys)
         return True
 
     def handle_keys__game_events(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
-        for item in self.game_events:
+        for item in self.substates:
             if not item.handle_keys(keys):
-                self.game_events.remove(item)
+                self.substates.remove(item)
             break
         return True
 
@@ -370,78 +364,79 @@ class GameStateManager(StateManager):
                 _ = self.player.move((x + 1, y))
             elif keys[pygame.constants.K_LEFT]:
                 _ = self.player.move((x - 1, y))
-        if keys[pygame.constants.K_LSHIFT]:
-            self.player.movement_type = MovementType.RUNNING
-        else:
-            self.player.movement_type = MovementType.WALKING
+            if keys[pygame.constants.K_LSHIFT]:
+                self.player.movement_speed = MovementSpeed.RUNNING
+            else:
+                self.player.movement_speed = MovementSpeed.WALKING
         return True
 
     @override
-    def update(self: Self, dt: float) -> bool:
-        if not self.update__game_events(dt):
+    def update(self: Self) -> bool:
+        if not self.update__game_events():
             return False
-        if not self.update__lancers(dt):
+        if not self.update__lancers():
             return False
-        return self.update__player(dt)
+        return self.update__player()
 
-    def update__game_events(self: Self, dt: float) -> bool:
-        if not self.game_events:
+    def update__game_events(self: Self) -> bool:
+        if not self.substates:
             self.state = GameState.overworld
             return True
-        for item in self.game_events:
-            if not item.update(dt):
-                self.game_events.remove(item)
+        for item in self.substates:
+            if not item.update():
+                self.substates.remove(item)
             break
         return True
 
-    def update__lancers(self: Self, dt: float) -> bool:
+    def update__lancers(self: Self) -> bool:
         for lancer in self.map_lancers:
-            _ = lancer.update(dt)
+            _ = lancer.update()
         return True
 
-    def update__player(self: Self, dt: float) -> bool:
-        _ = self.player.update(dt)
+    def update__player(self: Self) -> bool:
+        _ = self.player.update()
         return True
 
     @override
-    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
-        for item in self.game_events:
-            if not item.draw_on_map(surface, dt):
-                self.game_events.remove(item)
+    def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
+        for item in self.substates:
+            if not item.draw_on_map(surface):
+                self.substates.remove(item)
             break
         return True
 
     @override
-    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
-        for item in self.game_events:
-            if not item.draw_on_window(surface, dt):
-                self.game_events.remove(item)
+    def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
+        for item in self.substates:
+            if not item.draw_on_window(surface):
+                self.substates.remove(item)
             break
         return True
 
     @override
     def cleanup(self: Self) -> bool:
-        for item in self.game_events:
+        for item in self.substates:
             if not item.is_running():
-                self.game_events.remove(item)
+                self.substates.remove(item)
             break
         return True
 
-    def map__is_walkable(
+    def character__notify_new_position(self: Self, character: Character) -> None:
+        del character
+
+    def map__can_walk(
         self: Self,
         position: pygame.typing.Point,
         collision_type: Literal["player", "lancer"],
     ) -> bool:
-        if collision_type == "player" and any(
-            position == p
-            for lancer in self.map_lancers
-            for p in (
-                lancer.position,
-                lancer.next_position,
-            )
-        ):
+        def get_position(character: Character) -> pygame.typing.Point:
+            if character.next_position is not None:
+                return character.next_position
+            return character.position
+
+        if collision_type == "player" and any(position == p for p in map(get_position, self.map_lancers)):
             return False
-        if collision_type == "lancer" and position in (self.player.position, self.player.next_position):
+        if collision_type == "lancer" and position == get_position(self.player):
             return False
         return self.map_data.is_walkable(position)
 
@@ -483,7 +478,7 @@ class PauseMenu(StateManager):
         return self._running
 
     @override
-    def dispatch(self: Self, dt: float) -> bool:
+    def dispatch(self: Self) -> bool:
         return True
 
     @override
@@ -497,15 +492,15 @@ class PauseMenu(StateManager):
         return True
 
     @override
-    def update(self: Self, dt: float) -> bool:
+    def update(self: Self) -> bool:
         return True
 
     @override
-    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
         return True
 
     @override
-    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
         _ = surface.blit(self.surface, self.rect)
         return True
 
@@ -537,7 +532,7 @@ class AlertSprite(StateManager):
         return self.dt <= ALERT_SPRITE_TIME
 
     @override
-    def dispatch(self: Self, dt: float) -> bool:
+    def dispatch(self: Self) -> bool:
         return True
 
     @override
@@ -549,19 +544,19 @@ class AlertSprite(StateManager):
         return True
 
     @override
-    def update(self: Self, dt: float) -> bool:
-        self._sprite_index = (self._sprite_index + ANIMATION_SPEED * dt) % len(self._sprites)
+    def update(self: Self) -> bool:
+        self.dt += 1
+        self._sprite_index = (self._sprite_index + ANIMATION_SPEED) % len(self._sprites)
         self.surface = self._sprites[int(self._sprite_index)]
-        self.dt += dt
         return True
 
     @override
-    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
         _ = surface.blit(self.surface, self.rect)
         return True
 
     @override
-    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
         return True
 
     @override
@@ -580,7 +575,7 @@ class AlertChase(StateManager):
         return True
 
     @override
-    def dispatch(self: Self, dt: float) -> bool:
+    def dispatch(self: Self) -> bool:
         next_position = self.get_next_move()
         if self.player.position == next_position:
             self.lancer.state = LancerState.done
@@ -596,15 +591,15 @@ class AlertChase(StateManager):
         return True
 
     @override
-    def update(self: Self, dt: float) -> bool:
+    def update(self: Self) -> bool:
         return True
 
     @override
-    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
         return True
 
     @override
-    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
         return True
 
     def get_next_move(self: Self) -> pygame.typing.Point:
@@ -661,7 +656,7 @@ class AlertDialog(StateManager):
         return self._running
 
     @override
-    def dispatch(self: Self, dt: float) -> bool:
+    def dispatch(self: Self) -> bool:
         return True
 
     @override
@@ -675,15 +670,15 @@ class AlertDialog(StateManager):
         return True
 
     @override
-    def update(self: Self, dt: float) -> bool:
+    def update(self: Self) -> bool:
         return True
 
     @override
-    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
         return True
 
     @override
-    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
         _ = surface.blit(self.surface, self.rect)
         return True
 
@@ -729,7 +724,7 @@ class Battle(StateManager):
         return self._running
 
     @override
-    def dispatch(self: Self, dt: float) -> bool:
+    def dispatch(self: Self) -> bool:
         return True
 
     @override
@@ -743,15 +738,15 @@ class Battle(StateManager):
         return True
 
     @override
-    def update(self: Self, dt: float) -> bool:
+    def update(self: Self) -> bool:
         return True
 
     @override
-    def draw_on_map(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
         return True
 
     @override
-    def draw_on_window(self: Self, surface: pygame.surface.Surface, dt: float) -> bool:
+    def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
         _ = surface.blit(self.surface, self.rect)
         return True
 
@@ -766,28 +761,34 @@ class MapData:
     lancer_routes: list[list[pygame.typing.Point]]
     player_position: pygame.typing.Point
 
-    def __init__(self: Self, map_data: str, lancer_routes: list[str]) -> None:
+    def __init__(
+        self: Self,
+        map_filename: Path,
+        lancer_routes_filenames: list[Path],
+    ) -> None:
         self.data = {}
         self.lancer_positions = []
         self.lancer_routes = []
-        self.load_map(map_data)
-        self.load_lancer_routes(lancer_routes)
+        self.load_map(map_filename)
+        self.load_lancer_routes(lancer_routes_filenames)
 
-    def load_map(self: Self, map_data: str) -> None:
-        for y, row in enumerate(map_data.strip().splitlines()):
+    def load_map(self: Self, map_filename: Path) -> None:
+        map_data = map_filename.read_text().strip()
+        for y, row in enumerate(map_data.splitlines()):
             for x, tile in enumerate(map(TileType, row)):
                 if tile in (TileType.EMPTY, TileType.WALL, TileType.WARP):
                     self.data[(x, y)] = TileType(tile)
-                elif tile in (TileType.LANCER1, TileType.LANCER2):
+                elif tile == TileType.LANCER:
                     self.lancer_positions.append((x, y))
                 elif tile == TileType.PLAYER:
                     self.player_position = (x, y)
 
-    def load_lancer_routes(self: Self, lancer_routes: list[str]) -> None:
-        for path in lancer_routes:
+    def load_lancer_routes(self: Self, lancer_routes_filenames: list[Path]) -> None:
+        for filaneme in lancer_routes_filenames:
+            path = filaneme.read_text().strip()
             items = [
                 ((x, y), sequence)
-                for y, row in enumerate(path.strip().splitlines())
+                for y, row in enumerate(path.splitlines())
                 for x, sequence in enumerate(row)
                 if sequence not in (".",)
             ]
@@ -819,28 +820,29 @@ class Character:
     rect: pygame.rect.FRect
     hitbox: pygame.rect.FRect
     direction: Direction
-    movement_type: MovementType
-    next_position: pygame.typing.Point | None = None  # for grid & collision
-    next_hitbox_position: pygame.typing.Point | None = None  # for drawing
+    movement_speed: MovementSpeed
+    next_position: pygame.typing.Point | None  # for grid & collision
+    next_hitbox_position: pygame.typing.Point | None  # for drawing
     is_moving: bool = False
-    _sprites: dict[Direction, dict[MovementType, pygame.surface.Surface]]
+    _sprites: SpriteSheet
 
     def __init__(
         self: Self,
         game_state_manager: GameStateManager,
         position: pygame.typing.Point,
-        sprites: dict[Direction, dict[MovementType, pygame.surface.Surface]],
+        sprites: SpriteSheet,
     ) -> None:
         self.id = uuid4()
         self.game_state_manager = game_state_manager
         self.position = position
         self.direction = Direction.DOWN
-        self.movement_type = MovementType.WALKING
+        self.movement_speed = MovementSpeed.WALKING
         self._sprites = sprites
-        self.surface = self._sprites[self.direction][MovementType.IDLE]
+        self.surface = self._sprites[self.direction][MovementSpeed.IDLE]
         self.rect = self.surface.get_frect()
         self.hitbox = pygame.rect.FRect((0, 0), TILE_SIZE)
         self.set_position(position)
+        self.unset_next_position()
 
     def __init_subclass__(cls: type[Self], charater_type: Literal["player", "lancer"], **kwargs: Any) -> None:  # pyright: ignore[reportAny, reportExplicitAny]  # noqa: ANN401
         super().__init_subclass__(**kwargs)
@@ -867,7 +869,7 @@ class Character:
         if (direction := self.get_direction(position)) != self.direction:
             self.direction = direction
             return False
-        if not self.game_state_manager.map__is_walkable(position, collision_type=self._character_type):
+        if not self.game_state_manager.map__can_walk(position, collision_type=self._character_type):
             return False
         self.set_next_position(position)
         return True
@@ -885,20 +887,21 @@ class Character:
             return Direction.LEFT
         return self.direction
 
-    def update(self: Self, dt: float) -> bool:
-        self.surface = self._sprites[self.direction][MovementType.IDLE]
+    def update(self: Self) -> bool:
+        self.surface = self._sprites[self.direction][self.movement_speed]
         if self.is_moving:
-            return self.handle_moving(dt)
+            return self.update__moving()
         return False
 
-    def handle_moving(self: Self, dt: float) -> bool:
+    def update__moving(self: Self) -> bool:
         if self.next_position is None or self.next_hitbox_position is None:
             return False
         if self.next_hitbox_position == self.hitbox.topleft:
             self.position = self.next_position
             self.unset_next_position()
+            self.game_state_manager.character__notify_new_position(self)
             return False
-        max_distance = self.movement_type.speed() * dt
+        max_distance = self.movement_speed.speed()
         current = pygame.math.Vector2(self.hitbox.topleft)
         current.move_towards_ip(self.next_hitbox_position, max_distance)
         self.hitbox.topleft = current
@@ -969,6 +972,16 @@ class MovementGenerator[T]:
         self._counter = (self._counter + 1) % len(self.items)
 
 
+class MapName(StrEnum):
+    MAP1 = auto()
+    MAP2 = auto()
+
+    def load_map(self: Self) -> MapData:
+        map_filename = Path(f"{self.value.lower()}.txt")
+        routes_filenames = sorted(Path().glob(f"{self.value.lower()}_lancer*.txt"))
+        return MapData(map_filename=map_filename, lancer_routes_filenames=routes_filenames)
+
+
 class Direction(StrEnum):
     DOWN = auto()
     UP = auto()
@@ -976,15 +989,15 @@ class Direction(StrEnum):
     LEFT = auto()
 
 
-class MovementType(StrEnum):
+class MovementSpeed(StrEnum):
     WALKING = auto()
     RUNNING = auto()
     IDLE = auto()
 
     def speed(self: Self) -> float:
-        if self == MovementType.WALKING:
+        if self == MovementSpeed.WALKING:
             return WALKING_SPEED
-        if self == MovementType.RUNNING:
+        if self == MovementSpeed.RUNNING:
             return RUNNING_SPEED
         return 0.0
 
@@ -993,8 +1006,7 @@ class TileType(StrEnum):
     EMPTY = "."
     WALL = "H"
     WARP = "O"
-    LANCER1 = "1"
-    LANCER2 = "2"
+    LANCER = "l"
     PLAYER = "p"
 
 
@@ -1008,29 +1020,28 @@ class LancerState(StrEnum):
     done = auto()
 
 
-def get_character_surface(
-    color: pygame.color.Color,
-) -> dict[Direction, dict[MovementType, pygame.surface.Surface]]:
-    return {d: {m: _draw_direction_arrow(d, color) for m in MovementType} for d in Direction}
+def get_character_surface(color: pygame.color.Color) -> SpriteSheet:
+    return {d: {m: _draw_character(d, color) for m in MovementSpeed} for d in Direction}
 
 
-def _draw_direction_arrow(direction: Direction, color: pygame.color.Color) -> pygame.surface.Surface:
-    head = pygame.rect.FRect((0, 0), TILE_SIZE)
+def _draw_character(direction: Direction, color: pygame.color.Color) -> pygame.surface.Surface:
+    head = pygame.rect.FRect((0, 0), TILE_SIZE).inflate(-_TILE_SIZE // 2, -_TILE_SIZE // 2)
     body = pygame.rect.FRect((0, _TILE_SIZE), TILE_SIZE)
     if direction == Direction.DOWN:
-        pody_points = [body.topleft, body.topright, body.midbottom, body.topleft]
+        head_polygon = [head.topleft, head.topright, head.midbottom, head.topleft]
     elif direction == Direction.UP:
-        pody_points = [body.bottomleft, body.bottomright, body.midtop, body.bottomleft]
+        head_polygon = [head.bottomleft, head.bottomright, head.midtop, head.bottomleft]
     elif direction == Direction.RIGHT:
-        pody_points = [body.topleft, body.bottomleft, body.midright, body.topleft]
+        head_polygon = [head.topleft, head.bottomleft, head.midright, head.topleft]
     elif direction == Direction.LEFT:
-        pody_points = [body.topright, body.bottomright, body.midleft, body.topright]
+        head_polygon = [head.topright, head.bottomright, head.midleft, head.topright]
+    body_polygon = [body.topleft, body.topright, body.midbottom, body.topleft]
     rect = pygame.rect.FRect((0, 0), (_TILE_SIZE, 2 * _TILE_SIZE))
     surface = pygame.surface.Surface(rect.size)
     surface.set_colorkey(COLORKEY)
     _ = surface.fill(COLORKEY)
-    _ = pygame.draw.circle(surface, color, head.center, _TILE_SIZE // 4)
-    _ = pygame.draw.polygon(surface, color, pody_points)
+    _ = pygame.draw.polygon(surface, color, head_polygon)
+    _ = pygame.draw.polygon(surface, color, body_polygon)
     return surface
 
 
@@ -1077,278 +1088,6 @@ def main() -> None:
     GameWindow().run()
     pygame.quit()
     sys.exit()
-
-
-MAP1_NAME: str = "map1"
-MAP1_DATA: str = """
-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-H.....................................................................................H
-H.HHHHH.....HHHHH......2........................................H.....H...............H
-H.H.............H...............................................H.....H...............H
-H.H.............H...............................................H.....H...............H
-H.H.............H...............................................H.....H...............H
-H.H...HHHHHHH...H...........................................HHHHH.....HHHHH...........H
-H.....HHHHHHH.........................................................................H
-H.....HHHHHHH.........................................................................H
-H.....HHHHHHH.............p...........................................................H
-H.....HHHHHHH.........................................................................H
-H.....HHHHHHH.........................................................................H
-H.H...HHHHHHH...H...........................................HHHHH.....HHHHH...........H
-H.H.............H...............................................H.....H...............H
-H.H.............H...............................................H.....H...............H
-H.H.............H...............................................H.....H...............H
-H.HHHHH.....HHHHH......1........................................H.....H...............H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H...HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...H..O.........................H....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...HHHHHHHHHHHHHHHHH.....HHHHHHHH....................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-"""
-MAP1_LANCER1_PATH: str = """
-.......................................................................................
-.......................................................................................
-.....................cbavut............................................................
-.....................d....s............................................................
-.....................e....r............................................................
-.....................f..opq............................................................
-.....................g..n..............................................................
-.....................h..m..............................................................
-.....................ijkl..............................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-"""
-MAP1_LANCER2_PATH: str = """
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.....................ijkl..............................................................
-.....................h..m..............................................................
-.....................g..n..............................................................
-.....................f..opq............................................................
-.....................e....r............................................................
-.....................d....s............................................................
-.....................cbavut............................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-.......................................................................................
-"""
-MAP1_LANCER_ROUTES: list[str] = [MAP1_LANCER1_PATH, MAP1_LANCER2_PATH]
-
-MAP2_NAME: str = "map2"
-MAP2_DATA: str = """
-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H...HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...H..O.........................H....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...H............................H...............p....................................H
-H...H............................H....................................................H
-H...HHHHHHHHHHHHHHHHH.....HHHHHHHH....................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-"""
-MAP2_LANCER1_PATH: str = """
-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H..........xxxxxx.....................................................................H
-H..........xxxxxx.....................................................................H
-H..........xxxxxx.....................................................................H
-H..........xxxxxx.....................................................................H
-H..........xxxxxx.....................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-H...HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...H..O.........................H....................................................H
-H...H............................H....................................................H
-H...H............................H....................................................H
-H...H............................H...............p....................................H
-H...H............................H....................................................H
-H...HHHHHHHHHHHHHHHHH.....HHHHHHHH....................................................H
-H.....................................................................................H
-H.....................................................................................H
-H.....................................................................................H
-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
-"""
-MAP2_LANCER_ROUTES: list[str] = []
 
 
 if __name__ == "__main__":
