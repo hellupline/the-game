@@ -986,8 +986,9 @@ class MapName(StrEnum):
     MAP2 = auto()
 
     def load_map(self: Self) -> MapData:
-        map_filename = Path(f"{self.value.lower()}.txt")
-        routes_filenames = sorted(Path().glob(f"{self.value.lower()}_lancer*.txt"))
+        maps_dir = Path("./maps")
+        map_filename = maps_dir / f"{self.value.lower()}.txt"
+        routes_filenames = sorted(maps_dir.glob(f"{self.value.lower()}_lancer*.txt"))
         return MapData(map_filename=map_filename, lancer_routes_filenames=routes_filenames)
 
 
