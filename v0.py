@@ -1,7 +1,6 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
-# - map warps
 # - npcs can walk in a area (not just a path)
 # - non combat npcs
 # - interaction with npcs
@@ -46,6 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 type SpriteSheet = dict[Direction, dict[MovementSpeed, pygame.surface.Surface]]
+type GroupKey = Literal["player", "lancer"]
 
 BLACK = pygame.color.Color(64, 64, 64)
 GREY = pygame.color.Color(128, 128, 128)
@@ -84,14 +84,14 @@ class GameWindow:
     surface: pygame.surface.Surface
     font: pygame.font.Font
     clock: pygame.time.Clock
-    game_state: GameStateManager
+    game_state_manager: GameStateManager
     _running: bool = True
 
     def __init__(self: Self) -> None:
         self.surface = pygame.display.set_mode(WINDOW_SIZE)
         self.font = pygame.font.Font(pygame.font.get_default_font())
         self.clock = pygame.time.Clock()
-        self.game_state = GameStateManager(main_window=self)
+        self.game_state_manager = GameStateManager(game_window=self)
 
     def quit(self: Self) -> None:
         self._running = False
@@ -112,7 +112,7 @@ class GameWindow:
         self.cleanup()
 
     def dispatch(self: Self) -> None:
-        _ = self.game_state.dispatch()
+        _ = self.game_state_manager.dispatch()
 
     def handle_events(self: Self, events: list[pygame.event.Event]) -> None:
         for event in events:
@@ -124,31 +124,31 @@ class GameWindow:
                 if event.key in quit_keys:  # pyright: ignore[reportAny]
                     self.quit()
                     return
-        _ = self.game_state.handle_events(events)
+        _ = self.game_state_manager.handle_events(events)
 
     def handle_keys(self: Self, keys: pygame.key.ScancodeWrapper) -> None:
-        _ = self.game_state.handle_keys(keys)
+        _ = self.game_state_manager.handle_keys(keys)
 
     def update(self: Self) -> None:
-        _ = self.game_state.update()
+        _ = self.game_state_manager.update()
 
     def draw(self: Self) -> None:
-        width, height = self.game_state.map_data.get_size()
+        width, height = self.game_state_manager.map_data.get_size()
         map_rect = pygame.rect.FRect((0, 0), (width * _TILE_SIZE, height * _TILE_SIZE))
         map_surface = pygame.surface.Surface(map_rect.size)
         _ = map_surface.fill(BLACK)
         self.draw_map(map_surface)
         self.draw_debug(map_surface)
         self.draw_characters(map_surface)
-        _ = self.game_state.draw_on_map(map_surface)
+        _ = self.game_state_manager.draw_on_map(map_surface)
         viewport_rect = self.surface.get_rect()
-        viewport_rect.center = self.game_state.player.rect.topleft
+        viewport_rect.center = self.game_state_manager.player.rect.topleft
         viewport_rect.clamp_ip(map_rect)
         _ = self.surface.blit(map_surface, area=viewport_rect)
-        _ = self.game_state.draw_on_window(self.surface)
+        _ = self.game_state_manager.draw_on_window(self.surface)
 
     def draw_map(self: Self, surface: pygame.surface.Surface) -> None:
-        for (x, y), tile in self.game_state.map_data.data.items():
+        for (x, y), tile in self.game_state_manager.map_data.data.items():
             if tile == TileType.WALL:
                 rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
                 _ = pygame.draw.rect(surface, WALL_COLOR, rect)
@@ -158,7 +158,7 @@ class GameWindow:
                 _ = pygame.draw.circle(surface, BLUE, rect.center, _TILE_SIZE // 4)
 
     def draw_characters(self: Self, surface: pygame.surface.Surface) -> None:
-        characters = [*self.game_state.map_lancers, self.game_state.player]
+        characters = [*self.game_state_manager.map_lancers, self.game_state_manager.player]
         for character in sorted(characters, key=lambda c: c.rect.y):
             _ = surface.blit(character.surface, character.rect)
 
@@ -176,7 +176,7 @@ class GameWindow:
 
     def _draw_lancer_path(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
-        for lancer in self.game_state.map_lancers:
+        for lancer in self.game_state_manager.map_lancers:
             for position in lancer.patrol_route.items:
                 x, y = position
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
@@ -188,7 +188,7 @@ class GameWindow:
 
     def _draw_lancer_line_of_sight(self: Self, surface: pygame.surface.Surface) -> None:
         inflate = -_TILE_SIZE * 0.75
-        for lancer in self.game_state.map_lancers:
+        for lancer in self.game_state_manager.map_lancers:
             for position in lancer.get_line_of_sight():
                 x, y = position
                 pos = (x * _TILE_SIZE, y * _TILE_SIZE)
@@ -196,7 +196,7 @@ class GameWindow:
                 _ = pygame.draw.rect(surface, LANCER_RAYCAST_COLOR, rect, width=1)
 
     def cleanup(self: Self) -> None:
-        _ = self.game_state.cleanup()
+        _ = self.game_state_manager.cleanup()
 
 
 class StateManager(ABC):
@@ -241,9 +241,9 @@ class StateManager(ABC):
 
 
 class GameStateManager(StateManager):
-    window: GameWindow
+    game_window: GameWindow
     state: GameState
-    substates: list[StateManager]
+    substate_managers: list[StateManager]
     map_data: MapData
     map_lancers: list[Lancer]
     player: Player
@@ -251,10 +251,10 @@ class GameStateManager(StateManager):
     _map_cache: dict[MapName, MapData]
     _updating: bool
 
-    def __init__(self: Self, main_window: GameWindow) -> None:
-        self.window = main_window
+    def __init__(self: Self, game_window: GameWindow) -> None:
+        self.game_window = game_window
         self.state = GameState.overworld
-        self.substates = []
+        self.substate_managers = []
         self.load_maps()
         self.set_map(MapName.MAP1)
 
@@ -269,7 +269,7 @@ class GameStateManager(StateManager):
             for position, route in zip(
                 self.map_data.lancer_positions,
                 self.map_data.lancer_routes,
-                strict=True,
+                strict=False,
             )
         ]
         self.player = Player(game_state_manager=self, position=self.map_data.player_position)
@@ -281,22 +281,24 @@ class GameStateManager(StateManager):
     @override
     def dispatch(self: Self) -> bool:
         if self.state == GameState.game_event:
-            return self.dispatch__substates()
+            return self.dispatch__substate_managers()
         if self.state == GameState.overworld:
             return self.dispatch__lancers()
         return True
 
-    def dispatch__substates(self: Self) -> bool:
-        for item in self.substates:
-            if not item.dispatch():
-                self.substates.remove(item)
+    def dispatch__substate_managers(self: Self) -> bool:
+        if not self.substate_managers:
+            self.state = GameState.overworld
+            return True
+        for item in self.substate_managers:
+            _ = item.dispatch()
             break
         return True
 
     def dispatch__lancers(self: Self) -> bool:
         if triggered := self.get_triggered_lancers():
             self.state = GameState.game_event
-            self.substates.extend(self.make_battle_start(triggered))
+            self.substate_managers.extend(self.make_battle_start(triggered))
             return False
         for lancer in self.map_lancers:
             if lancer.is_moving:
@@ -324,11 +326,11 @@ class GameStateManager(StateManager):
             (
                 AlertSprite(lancer),
                 AlertChase(lancer, self.player),
-                AlertDialog("You have been caught!", self.window.font),
+                AlertDialog("You have been caught!", self.game_window.font),
             )
             for lancer in lancers
         )
-        return [*pre_battle, Battle(self.window.font, lancers)]
+        return [*pre_battle, Battle(self.game_window.font, lancers)]
 
     @override
     def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
@@ -341,15 +343,15 @@ class GameStateManager(StateManager):
         if self.state == GameState.overworld:
             if keys[pygame.constants.K_RETURN] and not self.player.is_moving:
                 self.state = GameState.game_event
-                self.substates.append(PauseMenu(self.window.font))
+                self.substate_managers.append(PauseMenu(self.game_window.font))
                 return False
             return self.handle_keys__player(keys)
         return True
 
     def handle_keys__game_events(self: Self, keys: pygame.key.ScancodeWrapper) -> bool:
-        for item in self.substates:
+        for item in self.substate_managers:
             if not item.handle_keys(keys):
-                self.substates.remove(item)
+                self.substate_managers.remove(item)
             break
         return True
 
@@ -379,12 +381,8 @@ class GameStateManager(StateManager):
         return self.update__player()
 
     def update__game_events(self: Self) -> bool:
-        if not self.substates:
-            self.state = GameState.overworld
-            return True
-        for item in self.substates:
-            if not item.update():
-                self.substates.remove(item)
+        for item in self.substate_managers:
+            _ = item.update()
             break
         return True
 
@@ -399,49 +397,48 @@ class GameStateManager(StateManager):
 
     @override
     def draw_on_map(self: Self, surface: pygame.surface.Surface) -> bool:
-        for item in self.substates:
-            if not item.draw_on_map(surface):
-                self.substates.remove(item)
+        for item in self.substate_managers:
+            _ = item.draw_on_map(surface)
             break
         return True
 
     @override
     def draw_on_window(self: Self, surface: pygame.surface.Surface) -> bool:
-        for item in self.substates:
-            if not item.draw_on_window(surface):
-                self.substates.remove(item)
+        for item in self.substate_managers:
+            _ = item.draw_on_window(surface)
             break
         return True
 
     @override
     def cleanup(self: Self) -> bool:
-        for item in self.substates:
+        for item in self.substate_managers:
             if not item.is_running():
-                self.substates.remove(item)
+                self.substate_managers.remove(item)
             break
         return True
 
-    def character__notify_new_position(self: Self, character: Character) -> None:
-        del character
-
-    def map__can_walk(
-        self: Self,
-        position: pygame.typing.Point,
-        collision_type: Literal["player", "lancer"],
-    ) -> bool:
+    def map__can_walk(self: Self, position: pygame.typing.Point, group_key: GroupKey) -> bool:
         def get_position(character: Character) -> pygame.typing.Point:
             if character.next_position is not None:
                 return character.next_position
             return character.position
 
-        if collision_type == "player" and any(position == p for p in map(get_position, self.map_lancers)):
+        if group_key == "player" and any(position == p for p in map(get_position, self.map_lancers)):
             return False
-        if collision_type == "lancer" and position == get_position(self.player):
+        # XXX: add other lancers to collision check
+        if group_key == "lancer" and position == get_position(self.player):
             return False
         return self.map_data.is_walkable(position)
 
     def map__is_warp(self: Self, position: pygame.typing.Point) -> bool:
         return self.map_data.is_warp(position)
+
+    def character__notify_new_position(self: Self, character: Character) -> None:
+        if isinstance(character, Player) and self.map__is_warp(character.position):
+            if self._map_name == MapName.MAP1:
+                self.set_map(MapName.MAP2)
+            elif self._map_name == MapName.MAP2:
+                self.set_map(MapName.MAP1)
 
 
 @final
@@ -511,13 +508,13 @@ class PauseMenu(StateManager):
 
 @final
 class AlertSprite(StateManager):
+    _max_time: ClassVar[float] = ALERT_SPRITE_TIME
+    _dt: float = 0.0
+    _sprite_index: float = 0
+    _sprites: list[pygame.surface.Surface]
     surface: pygame.surface.Surface
     rect: pygame.rect.FRect
-    dt: float = 0.0
     lancer: Lancer
-    _sprites: list[pygame.surface.Surface]
-    _sprite_index: float = 0
-    _max_time: ClassVar[float] = ALERT_SPRITE_TIME
 
     def __init__(self: Self, lancer: Lancer) -> None:
         sprites = _draw_alert_mark(RED)
@@ -529,7 +526,7 @@ class AlertSprite(StateManager):
 
     @override
     def is_running(self: Self) -> bool:
-        return self.dt <= ALERT_SPRITE_TIME
+        return self._dt <= ALERT_SPRITE_TIME
 
     @override
     def dispatch(self: Self) -> bool:
@@ -545,7 +542,7 @@ class AlertSprite(StateManager):
 
     @override
     def update(self: Self) -> bool:
-        self.dt += 1
+        self._dt += 1
         self._sprite_index = (self._sprite_index + ANIMATION_SPEED) % len(self._sprites)
         self.surface = self._sprites[int(self._sprite_index)]
         return True
@@ -566,21 +563,33 @@ class AlertSprite(StateManager):
 
 @final
 class AlertChase(StateManager):
+    lancer: Lancer
+    player: Player
+    _running: bool
+
     def __init__(self: Self, lancer: Lancer, player: Player) -> None:
         self.lancer = lancer
         self.player = player
+        self._running = True
+
+    def quit(self: Self) -> None:
+        self._running = False
 
     @override
     def is_running(self: Self) -> bool:
-        return True
+        return self._running
 
     @override
     def dispatch(self: Self) -> bool:
         next_position = self.get_next_move()
         if self.player.position == next_position:
             self.lancer.state = LancerState.done
+            self.quit()
             return False
-        return self.lancer.move(next_position)
+        if not self.lancer.move(next_position):
+            self.quit()
+            return False
+        return True
 
     @override
     def handle_events(self: Self, events: list[pygame.event.Event]) -> bool:
@@ -812,7 +821,7 @@ class MapData:
 
 
 class Character:
-    _character_type: ClassVar[Literal["player", "lancer"]]
+    group_key: ClassVar[GroupKey]
     id: UUID
     game_state_manager: GameStateManager
     position: pygame.typing.Point
@@ -844,9 +853,9 @@ class Character:
         self.set_position(position)
         self.unset_next_position()
 
-    def __init_subclass__(cls: type[Self], charater_type: Literal["player", "lancer"], **kwargs: Any) -> None:  # pyright: ignore[reportAny, reportExplicitAny]  # noqa: ANN401
+    def __init_subclass__(cls: type[Self], group_key: GroupKey, **kwargs: Any) -> None:  # pyright: ignore[reportAny, reportExplicitAny]  # noqa: ANN401
         super().__init_subclass__(**kwargs)
-        cls._character_type = charater_type
+        cls.group_key = group_key
 
     def set_position(self: Self, position: pygame.typing.Point) -> None:
         x, y = position
@@ -869,7 +878,7 @@ class Character:
         if (direction := self.get_direction(position)) != self.direction:
             self.direction = direction
             return False
-        if not self.game_state_manager.map__can_walk(position, collision_type=self._character_type):
+        if not self.game_state_manager.map__can_walk(position, group_key=self.group_key):
             return False
         self.set_next_position(position)
         return True
@@ -909,7 +918,7 @@ class Character:
         return True
 
 
-class Lancer(Character, charater_type="lancer"):
+class Lancer(Character, group_key="lancer"):
     state: LancerState
     patrol_route: MovementGenerator[pygame.typing.Point]
     line_of_sight_distance: int
@@ -943,7 +952,7 @@ class Lancer(Character, charater_type="lancer"):
         return line_of_sight
 
 
-class Player(Character, charater_type="player"):
+class Player(Character, group_key="player"):
     def __init__(self: Self, game_state_manager: GameStateManager, position: pygame.typing.Point) -> None:
         super().__init__(game_state_manager, position, get_character_surface(PLAYER_COLOR))
 
