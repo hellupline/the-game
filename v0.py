@@ -1,15 +1,13 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
-# - npcs can walk in a area (not just a path)
+# - add npc config files
 # - non combat npcs
 # - interaction with npcs
 # - multi height map
-# - combine npc battles into one single battle
-# - update get_pressed to use events ?
-# - separate window from game logic
 # - optimize drawing (only redraw changed parts)
 # - multi layer render
+# - npc can just not walk, or just rotate
 
 import sys
 from abc import ABC
@@ -17,8 +15,10 @@ from abc import abstractmethod
 from enum import StrEnum
 from enum import auto
 from itertools import chain
+from itertools import cycle
 from operator import itemgetter
 from pathlib import Path
+from random import choice
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import ClassVar
@@ -43,6 +43,7 @@ import pygame.typing
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from collections.abc import Iterator
 
 type SpriteSheet = dict[Direction, dict[MovementSpeed, pygame.surface.Surface]]
 type GroupKey = Literal["player", "lancer"]
@@ -256,7 +257,7 @@ class GameStateManager(StateManager):
         self.state = GameState.overworld
         self.substate_managers = []
         self.load_maps()
-        self.set_map(MapName.MAP1)
+        self.set_map(MapName.MAP2)
 
     def load_maps(self: Self) -> None:
         self._map_cache = {map_name: map_name.load_map() for map_name in MapName}
@@ -920,7 +921,7 @@ class Character:
 
 class Lancer(Character, group_key="lancer"):
     state: LancerState
-    patrol_route: MovementGenerator[pygame.typing.Point]
+    patrol_route: MovementGeneratorSparce  # MovementGenerator[pygame.typing.Point]
     line_of_sight_distance: int
 
     def __init__(
@@ -932,7 +933,7 @@ class Lancer(Character, group_key="lancer"):
     ) -> None:
         super().__init__(game_state_manager, position, get_character_surface(LANCER_COLOR))
         self.state = LancerState.patrolling
-        self.patrol_route = MovementGenerator(route)
+        self.patrol_route = MovementGeneratorSparce(route)  # MovementGenerator(route)
         self.line_of_sight_distance = line_of_sight_distance
 
     def get_line_of_sight(self: Self) -> list[pygame.typing.Point]:
@@ -958,10 +959,13 @@ class Player(Character, group_key="player"):
 
 
 class MovementGenerator[T]:
+    _iterator: Iterator[T]
+    _current: T
     items: list[T]
-    _counter: int = 0
 
     def __init__(self: Self, items: list[T]) -> None:
+        self._iterator = cycle(items)
+        self._current = next(self._iterator)
         self.items = items
 
     def __iter__(self: Self) -> Self:
@@ -971,14 +975,39 @@ class MovementGenerator[T]:
         return self.next()
 
     def next(self: Self) -> T:
-        try:
-            return self.items[self._counter]
-        except IndexError as exc:
-            msg = "No items"
-            raise StopIteration(msg) from exc
+        return self._current
 
     def advance(self: Self) -> None:
-        self._counter = (self._counter + 1) % len(self.items)
+        self._current = next(self._iterator)
+
+
+class MovementGeneratorSparce:
+    _current: pygame.typing.Point
+    items: dict[pygame.typing.Point, None]
+
+    def __init__(self: Self, items: list[pygame.typing.Point]) -> None:
+        self._current = items[0]
+        self.items = dict.fromkeys(items)
+
+    def __iter__(self: Self) -> Self:
+        return self
+
+    def __next__(self: Self) -> pygame.typing.Point:
+        return self.next()
+
+    def next(self: Self) -> pygame.typing.Point:
+        return self._current
+
+    def advance(self: Self) -> None:
+        x, y = self._current
+        coords = [
+            (x, y + 1),  # down
+            (x, y - 1),  # up
+            (x + 1, y),  # right
+            (x - 1, y),  # left
+        ]
+        points = [p for p in coords if p in self.items]
+        self._current = choice(points)  # noqa: S311
 
 
 class MapName(StrEnum):
