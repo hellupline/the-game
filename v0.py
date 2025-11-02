@@ -9,6 +9,7 @@
 # - multi layer render
 # - npc can just not walk, or just rotate
 
+import json
 import sys
 from abc import ABC
 from abc import abstractmethod
@@ -16,7 +17,6 @@ from enum import StrEnum
 from enum import auto
 from itertools import chain
 from itertools import cycle
-from operator import itemgetter
 from pathlib import Path
 from random import choice
 from typing import TYPE_CHECKING
@@ -24,9 +24,9 @@ from typing import Any
 from typing import ClassVar
 from typing import Literal
 from typing import Self
+from typing import TypedDict
 from typing import final
 from typing import override
-from uuid import UUID
 from uuid import uuid4
 
 import pygame
@@ -44,6 +44,7 @@ import pygame.typing
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from collections.abc import Iterator
+    from uuid import UUID
 
 type SpriteSheet = dict[Direction, dict[MovementSpeed, pygame.surface.Surface]]
 type GroupKey = Literal["player", "lancer"]
@@ -149,14 +150,14 @@ class GameWindow:
         _ = self.game_state_manager.draw_on_window(self.surface)
 
     def draw_map(self: Self, surface: pygame.surface.Surface) -> None:
-        for (x, y), tile in self.game_state_manager.map_data.data.items():
-            if tile == TileType.WALL:
-                rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
-                _ = pygame.draw.rect(surface, WALL_COLOR, rect)
-            elif tile == TileType.WARP:
-                rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
-                _ = pygame.draw.rect(surface, FLOOR_COLOR, rect)
-                _ = pygame.draw.circle(surface, BLUE, rect.center, _TILE_SIZE // 4)
+        for x, y in self.game_state_manager.map_data.walls:
+            rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
+            _ = pygame.draw.rect(surface, WALL_COLOR, rect)
+        for configuration in self.game_state_manager.map_data.warps:
+            x, y = configuration["position"]
+            rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
+            _ = pygame.draw.rect(surface, FLOOR_COLOR, rect)
+            _ = pygame.draw.circle(surface, BLUE, rect.center, _TILE_SIZE // 4)
 
     def draw_characters(self: Self, surface: pygame.surface.Surface) -> None:
         characters = [*self.game_state_manager.map_lancers, self.game_state_manager.player]
@@ -266,12 +267,9 @@ class GameStateManager(StateManager):
         self._map_name = name
         self.map_data = self._map_cache[name]
         self.map_lancers = [
-            Lancer(game_state_manager=self, position=position, route=route)
-            for position, route in zip(
-                self.map_data.lancer_positions,
-                self.map_data.lancer_routes,
-                strict=False,
-            )
+            # XXX: use route_type to select different movement generators
+            Lancer(game_state_manager=self, position=configuration["position"], route=configuration["route"])
+            for configuration in self.map_data.lancer_configurations
         ]
         self.player = Player(game_state_manager=self, position=self.map_data.player_position)
 
@@ -766,59 +764,49 @@ class Battle(StateManager):
 
 
 class MapData:
-    data: dict[pygame.typing.Point, TileType]
-    lancer_positions: list[pygame.typing.Point]
-    lancer_routes: list[list[pygame.typing.Point]]
+    walls: set[pygame.typing.Point]
+    warps: list[WarpConfiguration]
+    lancer_configurations: list[LancerConfiguration]
     player_position: pygame.typing.Point
 
-    def __init__(
-        self: Self,
-        map_filename: Path,
-        lancer_routes_filenames: list[Path],
-    ) -> None:
-        self.data = {}
-        self.lancer_positions = []
-        self.lancer_routes = []
-        self.load_map(map_filename)
-        self.load_lancer_routes(lancer_routes_filenames)
+    def __init__(self: Self, configuration: MapConfiguration) -> None:
+        self.walls = configuration["walls"]
+        self.warps = configuration["warps"]
+        self.lancer_configurations = configuration["lancers"]
+        self.player_position = configuration["player_position"]
 
-    def load_map(self: Self, map_filename: Path) -> None:
-        map_data = map_filename.read_text().strip()
-        for y, row in enumerate(map_data.splitlines()):
-            for x, tile in enumerate(map(TileType, row)):
-                if tile in (TileType.EMPTY, TileType.WALL, TileType.WARP):
-                    self.data[(x, y)] = TileType(tile)
-                elif tile == TileType.LANCER:
-                    self.lancer_positions.append((x, y))
-                elif tile == TileType.PLAYER:
-                    self.player_position = (x, y)
-
-    def load_lancer_routes(self: Self, lancer_routes_filenames: list[Path]) -> None:
-        for filaneme in lancer_routes_filenames:
-            path = filaneme.read_text().strip()
-            items = [
-                ((x, y), sequence)
-                for y, row in enumerate(path.splitlines())
-                for x, sequence in enumerate(row)
-                if sequence not in (".",)
-            ]
-            items = sorted(items, key=itemgetter(1))
-            self.lancer_routes.append([*map(itemgetter(0), items)])
+    @classmethod
+    def from_file(cls: type[Self], filename: Path) -> Self:
+        with filename.open("r") as f:
+            data: MapConfigurationJson = json.load(f)  # pyright: ignore[reportAny]
+        d: MapConfiguration = {
+            "walls": {(x, y) for x, y in data["walls"]},
+            "warps": [
+                {**configuration, "position": (configuration["position"][0], configuration["position"][1])}
+                for configuration in data["warps"]
+            ],
+            "lancers": [
+                {**configuration, "route": [(x, y) for x, y in configuration["route"]]}
+                for configuration in data["lancers"]
+            ],
+            "player_position": data["player_position"],
+        }
+        return cls(d)
 
     def get_size(self: Self) -> pygame.typing.Point:
         return (self.get_width(), self.get_height())
 
     def get_width(self: Self) -> float:
-        return max(x for x, _ in self.data) + 1
+        return max(x for x, _ in self.walls) + 1
 
     def get_height(self: Self) -> float:
-        return max(y for _, y in self.data) + 1
+        return max(y for _, y in self.walls) + 1
 
     def is_walkable(self: Self, position: pygame.typing.Point) -> bool:
-        return self.data.get(position) != TileType.WALL
+        return position not in self.walls
 
     def is_warp(self: Self, position: pygame.typing.Point) -> bool:
-        return self.data.get(position) == TileType.WARP
+        return position in {w["position"] for w in self.warps}
 
 
 class Character:
@@ -921,7 +909,7 @@ class Character:
 
 class Lancer(Character, group_key="lancer"):
     state: LancerState
-    patrol_route: MovementGeneratorSparce  # MovementGenerator[pygame.typing.Point]
+    patrol_route: MovementGeneratorSparse  # MovementGenerator[pygame.typing.Point]
     line_of_sight_distance: int
 
     def __init__(
@@ -933,7 +921,7 @@ class Lancer(Character, group_key="lancer"):
     ) -> None:
         super().__init__(game_state_manager, position, get_character_surface(LANCER_COLOR))
         self.state = LancerState.patrolling
-        self.patrol_route = MovementGeneratorSparce(route)  # MovementGenerator(route)
+        self.patrol_route = MovementGeneratorSparse(route)  # MovementGenerator(route)
         self.line_of_sight_distance = line_of_sight_distance
 
     def get_line_of_sight(self: Self) -> list[pygame.typing.Point]:
@@ -981,7 +969,7 @@ class MovementGenerator[T]:
         self._current = next(self._iterator)
 
 
-class MovementGeneratorSparce:
+class MovementGeneratorSparse:
     _current: pygame.typing.Point
     items: dict[pygame.typing.Point, None]
 
@@ -1015,10 +1003,37 @@ class MapName(StrEnum):
     MAP2 = auto()
 
     def load_map(self: Self) -> MapData:
-        maps_dir = Path("./maps")
-        map_filename = maps_dir / f"{self.value.lower()}.txt"
-        routes_filenames = sorted(maps_dir.glob(f"{self.value.lower()}_lancer*.txt"))
-        return MapData(map_filename=map_filename, lancer_routes_filenames=routes_filenames)
+        return MapData.from_file(Path("./data") / f"{self.value.lower()}.json")
+
+
+class MapConfigurationJson(TypedDict):
+    walls: list[list[int]]
+    warps: list[WarpConfiguration]
+    lancers: list[LancerConfiguration]
+    player_position: pygame.typing.Point
+
+
+class MapConfiguration(TypedDict):
+    walls: set[pygame.typing.Point]
+    warps: list[WarpConfiguration]
+    lancers: list[LancerConfiguration]
+    player_position: pygame.typing.Point
+
+
+class WarpConfiguration(TypedDict):
+    position: pygame.typing.Point
+    target: MapName
+
+
+class LancerConfiguration(TypedDict):
+    position: pygame.typing.Point
+    route_type: PatrolType
+    route: list[pygame.typing.Point]
+
+
+class PatrolType(StrEnum):
+    SEQUENCE = auto()
+    AREA = auto()
 
 
 class Direction(StrEnum):
