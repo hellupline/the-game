@@ -13,6 +13,7 @@ import json
 import sys
 from abc import ABC
 from abc import abstractmethod
+from dataclasses import dataclass
 from enum import StrEnum
 from enum import auto
 from itertools import chain
@@ -24,9 +25,9 @@ from typing import Any
 from typing import ClassVar
 from typing import Literal
 from typing import Self
-from typing import TypedDict
 from typing import final
 from typing import override
+from uuid import UUID
 from uuid import uuid4
 
 import pygame
@@ -44,7 +45,6 @@ import pygame.typing
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from collections.abc import Iterator
-    from uuid import UUID
 
 type SpriteSheet = dict[Direction, dict[MovementSpeed, pygame.surface.Surface]]
 type GroupKey = Literal["player", "lancer"]
@@ -80,6 +80,12 @@ WALKING_SPEED = 2
 RUNNING_SPEED = 6
 ALERT_SPRITE_TIME = 50
 ANIMATION_SPEED = 0.05
+
+ROOT_DIR = Path(__file__).resolve().parent
+DATA_DIR = ROOT_DIR / "data"
+MAPS_DIR = DATA_DIR / "maps"
+WARPS_DIR = DATA_DIR / "warps"
+LANCERS_DIR = DATA_DIR / "lancers"
 
 
 class GameWindow:
@@ -154,7 +160,7 @@ class GameWindow:
             rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
             _ = pygame.draw.rect(surface, WALL_COLOR, rect)
         for configuration in self.game_state_manager.map_data.warps:
-            x, y = configuration["position"]
+            x, y = configuration.source_map_position
             rect = pygame.rect.FRect((x * _TILE_SIZE, y * _TILE_SIZE), TILE_SIZE)
             _ = pygame.draw.rect(surface, FLOOR_COLOR, rect)
             _ = pygame.draw.circle(surface, BLUE, rect.center, _TILE_SIZE // 4)
@@ -249,8 +255,8 @@ class GameStateManager(StateManager):
     map_data: MapData
     map_lancers: list[Lancer]
     player: Player
-    _map_name: str
-    _map_cache: dict[MapName, MapData]
+    _map_id: UUID
+    _map_cache: dict[UUID, MapData]
     _updating: bool
 
     def __init__(self: Self, game_window: GameWindow) -> None:
@@ -258,20 +264,25 @@ class GameStateManager(StateManager):
         self.state = GameState.overworld
         self.substate_managers = []
         self.load_maps()
-        self.set_map(MapName.MAP2)
+        self.set_map(get_map_id(MAPS_DIR / "map1.link"))  # XXX: optimize this for use already loaded maps
 
     def load_maps(self: Self) -> None:
-        self._map_cache = {map_name: map_name.load_map() for map_name in MapName}
+        self._map_cache = {m.id: m for m in map(MapData.from_file, MAPS_DIR.glob("*.link"))}
 
-    def set_map(self: Self, name: MapName) -> None:
-        self._map_name = name
-        self.map_data = self._map_cache[name]
+    def set_map(self: Self, map_id: UUID) -> None:
+        self._map_id = map_id
+        self.map_data = self._map_cache[map_id]
         self.map_lancers = [
             # XXX: use route_type to select different movement generators
-            Lancer(game_state_manager=self, position=configuration["position"], route=configuration["route"])
+            Lancer(
+                game_state_manager=self,
+                position=configuration.source_map_position,
+                route=configuration.route,
+            )
             for configuration in self.map_data.lancer_configurations
         ]
-        self.player = Player(game_state_manager=self, position=self.map_data.player_position)
+        # XXX: use warp position
+        self.player = Player(game_state_manager=self, position=self.map_data.warps[0].source_map_position)
 
     @override
     def is_running(self: Self) -> bool:
@@ -433,11 +444,12 @@ class GameStateManager(StateManager):
         return self.map_data.is_warp(position)
 
     def character__notify_new_position(self: Self, character: Character) -> None:
+        # XXX: why is not changing the map
         if isinstance(character, Player) and self.map__is_warp(character.position):
-            if self._map_name == MapName.MAP1:
-                self.set_map(MapName.MAP2)
-            elif self._map_name == MapName.MAP2:
-                self.set_map(MapName.MAP1)
+            if self._map_id == get_map_id(MAPS_DIR / "map1.link"):
+                self.set_map(get_map_id(MAPS_DIR / "map2.link"))
+            elif self._map_id == get_map_id(MAPS_DIR / "map2.link"):
+                self.set_map(get_map_id(MAPS_DIR / "map1.link"))
 
 
 @final
@@ -764,34 +776,20 @@ class Battle(StateManager):
 
 
 class MapData:
+    id: UUID
     walls: set[pygame.typing.Point]
     warps: list[WarpConfiguration]
     lancer_configurations: list[LancerConfiguration]
-    player_position: pygame.typing.Point
 
     def __init__(self: Self, configuration: MapConfiguration) -> None:
-        self.walls = configuration["walls"]
-        self.warps = configuration["warps"]
-        self.lancer_configurations = configuration["lancers"]
-        self.player_position = configuration["player_position"]
+        self.id = configuration.id
+        self.walls = configuration.walls
+        self.warps = configuration.warps
+        self.lancer_configurations = configuration.lancers
 
     @classmethod
     def from_file(cls: type[Self], filename: Path) -> Self:
-        with filename.open("r") as f:
-            data: MapConfigurationJson = json.load(f)  # pyright: ignore[reportAny]
-        d: MapConfiguration = {
-            "walls": {(x, y) for x, y in data["walls"]},
-            "warps": [
-                {**configuration, "position": (configuration["position"][0], configuration["position"][1])}
-                for configuration in data["warps"]
-            ],
-            "lancers": [
-                {**configuration, "route": [(x, y) for x, y in configuration["route"]]}
-                for configuration in data["lancers"]
-            ],
-            "player_position": data["player_position"],
-        }
-        return cls(d)
+        return cls(MapConfiguration.from_file(filename))
 
     def get_size(self: Self) -> pygame.typing.Point:
         return (self.get_width(), self.get_height())
@@ -806,7 +804,7 @@ class MapData:
         return position not in self.walls
 
     def is_warp(self: Self, position: pygame.typing.Point) -> bool:
-        return position in {w["position"] for w in self.warps}
+        return position in {w.source_map_position for w in self.warps}
 
 
 class Character:
@@ -998,37 +996,80 @@ class MovementGeneratorSparse:
         self._current = choice(points)  # noqa: S311
 
 
-class MapName(StrEnum):
-    MAP1 = auto()
-    MAP2 = auto()
-
-    def load_map(self: Self) -> MapData:
-        return MapData.from_file(Path("./data") / f"{self.value.lower()}.json")
-
-
-class MapConfigurationJson(TypedDict):
-    walls: list[list[int]]
-    warps: list[WarpConfiguration]
-    lancers: list[LancerConfiguration]
-    player_position: pygame.typing.Point
-
-
-class MapConfiguration(TypedDict):
+@dataclass(frozen=True)
+class MapConfiguration:
+    id: UUID
     walls: set[pygame.typing.Point]
     warps: list[WarpConfiguration]
     lancers: list[LancerConfiguration]
-    player_position: pygame.typing.Point
+
+    @classmethod
+    def from_id(cls: type[Self], map_id: UUID) -> Self:
+        return cls.from_file(MAPS_DIR / f"{map_id}.link")
+
+    @classmethod
+    def from_file(cls: type[Self], filename: Path) -> Self:
+        with filename.open(mode="r") as f:
+            data = json.load(f)  # pyright: ignore[reportAny]
+        return cls(
+            id=UUID(data["id"]),  # pyright: ignore[reportAny]
+            walls={(x, y) for x, y in data["walls"]},  # pyright: ignore[reportAny]
+            warps=[*map(WarpConfiguration.from_id, data["warps"])],  # pyright: ignore[reportAny]
+            lancers=[*map(LancerConfiguration.from_id, data["lancers"])],  # pyright: ignore[reportAny]
+        )
 
 
-class WarpConfiguration(TypedDict):
-    position: pygame.typing.Point
-    target: MapName
+@dataclass(frozen=True)
+class WarpConfiguration:
+    id: UUID
+    source_map_id: UUID
+    source_map_position: pygame.typing.Point
+    target_map_id: UUID
+    target_map_position: pygame.typing.Point
+
+    @classmethod
+    def from_id(cls: type[Self], warp_id: UUID) -> Self:
+        return cls.from_file(WARPS_DIR / f"{warp_id}.json")
+
+    @classmethod
+    def from_file(cls: type[Self], filename: Path) -> Self:
+        with filename.open(mode="r") as f:
+            data = json.load(f)  # pyright: ignore[reportAny]
+        source_x, source_y = data["source_map_position"]  # pyright: ignore[reportAny]
+        target_x, target_y = data["target_map_position"]  # pyright: ignore[reportAny]
+        return cls(
+            id=UUID(data["id"]),  # pyright: ignore[reportAny]
+            source_map_id=UUID(data["source_map_id"]),  # pyright: ignore[reportAny]
+            source_map_position=(source_x, source_y),
+            target_map_id=UUID(data["target_map_id"]),  # pyright: ignore[reportAny]
+            target_map_position=(target_x, target_y),
+        )
 
 
-class LancerConfiguration(TypedDict):
-    position: pygame.typing.Point
+@dataclass(frozen=True)
+class LancerConfiguration:
+    id: UUID
+    source_map_id: UUID
+    source_map_position: pygame.typing.Point
     route_type: PatrolType
     route: list[pygame.typing.Point]
+
+    @classmethod
+    def from_id(cls: type[Self], lancer_id: UUID) -> Self:
+        return cls.from_file(LANCERS_DIR / f"{lancer_id}.json")
+
+    @classmethod
+    def from_file(cls: type[Self], filename: Path) -> Self:
+        with filename.open(mode="r") as f:
+            data = json.load(f)  # pyright: ignore[reportAny]
+        x, y = data["source_map_position"]  # pyright: ignore[reportAny]
+        return cls(
+            id=UUID(data["id"]),  # pyright: ignore[reportAny]
+            source_map_id=UUID(data["source_map_id"]),  # pyright: ignore[reportAny]
+            source_map_position=(x, y),
+            route_type=PatrolType(data["route_type"]),
+            route=[tuple(pos) for pos in data["route"]],  # pyright: ignore[reportAny]
+        )
 
 
 class PatrolType(StrEnum):
@@ -1121,6 +1162,19 @@ def _draw_alert_mark(color: pygame.color.Color) -> list[pygame.surface.Surface]:
     return [surface_1, surface_2, surface_3]
 
 
+def get_map_id(filename: Path) -> UUID:
+    map_data = json.loads(filename.read_bytes())  # pyright: ignore[reportAny]
+    return UUID(map_data["id"])  # pyright: ignore[reportAny]
+
+
+def main() -> None:
+    pygame.display.set_caption("The Game")
+    _ = pygame.base.init()
+    GameWindow().run()
+    pygame.quit()
+    sys.exit()
+
+
 def _debug(value: str, pos: pygame.typing.Point = (10, 10)) -> None:
     global _debug_font  # noqa: PLW0603
     if _debug_font is None:
@@ -1134,14 +1188,6 @@ def _debug(value: str, pos: pygame.typing.Point = (10, 10)) -> None:
 
 
 _debug_font: pygame.font.Font | None = None
-
-
-def main() -> None:
-    pygame.display.set_caption("The Game")
-    _ = pygame.base.init()
-    GameWindow().run()
-    pygame.quit()
-    sys.exit()
 
 
 if __name__ == "__main__":
