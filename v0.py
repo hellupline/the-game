@@ -1,7 +1,8 @@
 #!/usr/bin/env -S uv run python3
 
 # TODO:
-# - add npc config files
+# - map change is broken
+# - improve npc config files ?
 # - non combat npcs
 # - interaction with npcs
 # - multi height map
